@@ -23,6 +23,7 @@ import {
   createChromePageTarget,
   ensureChromePageTargetAfterClose,
   closeBlankChromeTabs,
+  stopChromeGracefully,
 } from "./chromeLifecycle.js";
 import { clearStaleChatGptConversationCookies, syncCookies } from "./cookies.js";
 import {
@@ -2512,7 +2513,7 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           if (terminatedRecordedChrome) {
             chromeTerminatedByThisRun = true;
           } else {
-            await chrome.kill();
+            await stopChromeGracefully(chrome, { host: chromeHost, logger });
             chromeTerminatedByThisRun = true;
           }
         } catch {

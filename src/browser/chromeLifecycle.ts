@@ -1,12 +1,112 @@
 import { rm } from "node:fs/promises";
 import { readFileSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import os from "node:os";
 import net from "node:net";
 import CDP from "chrome-remote-interface";
-import { launch, Launcher, type LaunchedChrome } from "chrome-launcher";
+import { launch, Launcher, getChromePath, type LaunchedChrome } from "chrome-launcher";
 import type { BrowserLogger, ResolvedBrowserConfig, ChromeClient } from "./types.js";
 import { cleanupStaleProfileState } from "./profileState.js";
 import { delay } from "./utils.js";
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Close Chrome via CDP Browser.close so it writes its clean-exit flag; only fall
+ * back to chrome-launcher's SIGKILL when the graceful path fails or times out.
+ * SIGKILL makes the next launch of a persistent profile show the
+ * "Chrome didn't shut down correctly / Restore pages?" bubble.
+ */
+export async function stopChromeGracefully(
+  chrome: LaunchedChrome,
+  options: {
+    host?: string;
+    timeoutMs?: number;
+    logger?: BrowserLogger;
+    /** Test seam: replace the CDP graceful close. */
+    closeViaCdp?: (host: string, port: number) => Promise<void>;
+  } = {},
+): Promise<void> {
+  const host = options.host ?? "127.0.0.1";
+  const timeoutMs = options.timeoutMs ?? 5_000;
+  const closeViaCdp =
+    options.closeViaCdp ??
+    (async (closeHost: string, port: number): Promise<void> => {
+      const version = await CDP.Version({ host: closeHost, port });
+      const browser = await CDP({ target: version.webSocketDebuggerUrl, local: true });
+      try {
+        await browser.Browser.close();
+      } finally {
+        await browser.close().catch(() => undefined);
+      }
+    });
+  const isExited = (): boolean => {
+    const proc = chrome.process;
+    if (!proc) return false;
+    return proc.exitCode !== null || proc.signalCode !== null || proc.killed;
+  };
+  if (!isExited()) {
+    try {
+      await closeViaCdp(host, chrome.port);
+      await Promise.race([
+        new Promise<void>((resolve) => {
+          const proc = chrome.process;
+          if (!proc || isExited()) return resolve();
+          proc.once("exit", () => resolve());
+        }),
+        delay(timeoutMs),
+      ]);
+      if (isExited()) {
+        options.logger?.("Chrome closed gracefully via Browser.close");
+      }
+    } catch {
+      // graceful close unavailable; force kill below
+    }
+  }
+  if (!isExited()) {
+    chrome.kill();
+  }
+}
+
+export function parseChromeVersionForTest(versionOutput: string): string | null {
+  const match = versionOutput.match(/(\d+\.\d+\.\d+\.\d+)/u);
+  return match?.[1] ?? null;
+}
+
+/**
+ * Headless Chrome advertises "HeadlessChrome" in its user agent and enables
+ * AutomationControlled blink features, both of which Cloudflare challenges.
+ * Masking them lets an established (signed-in) profile run headless.
+ */
+export function buildHeadlessStealthFlagsForTest(chromeVersion: string | null): string[] {
+  const flags = ["--disable-blink-features=AutomationControlled"];
+  if (chromeVersion) {
+    flags.push(
+      `--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`,
+    );
+  }
+  return flags;
+}
+
+const headlessVersionCache = new Map<string, string | null>();
+
+async function resolveHeadlessChromeVersion(chromePath?: string): Promise<string | null> {
+  const key = chromePath ?? "";
+  if (headlessVersionCache.has(key)) {
+    return headlessVersionCache.get(key) ?? null;
+  }
+  let version: string | null = null;
+  try {
+    const binary = chromePath ?? getChromePath();
+    const { stdout } = await execFileAsync(binary, ["--version"]);
+    version = parseChromeVersionForTest(String(stdout));
+  } catch {
+    version = null;
+  }
+  headlessVersionCache.set(key, version);
+  return version;
+}
 
 export async function launchChrome(
   config: ResolvedBrowserConfig,
@@ -21,6 +121,15 @@ export async function launchChrome(
     debugBindAddress,
     config.hideWindow ?? false,
   );
+  if (config.headless) {
+    const stealthVersion = await resolveHeadlessChromeVersion(config.chromePath ?? undefined);
+    chromeFlags.push(...buildHeadlessStealthFlagsForTest(stealthVersion));
+    if (stealthVersion) {
+      logger(
+        `Headless mode: masking user agent as Chrome ${stealthVersion} to reduce bot detection`,
+      );
+    }
+  }
   const usePatchedLauncher = Boolean(connectHost && connectHost !== "127.0.0.1");
   // copy-profile reuses a copied signed-in profile whose cookies are
   // Keychain-encrypted, so it must launch with the real Keychain (not mocked):
@@ -128,7 +237,7 @@ export function registerTerminationHooks(
         }
       } else {
         try {
-          await chrome.kill();
+          await stopChromeGracefully(chrome, { logger });
         } catch {
           // ignore kill failures
         }
@@ -147,7 +256,7 @@ export function registerTerminationHooks(
       // Vitest treats any `process.exit()` call as an unhandled failure, even if mocked.
       // Keep production behavior (hard-exit on signals) while letting tests observe state changes.
       process.exitCode = exitCode;
-      const isTestRun = process.env.VITEST === "1" || process.env.NODE_ENV === "test";
+      const isTestRun = Boolean(process.env.VITEST) || process.env.NODE_ENV === "test";
       if (!isTestRun) {
         process.exit(exitCode);
       }

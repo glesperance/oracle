@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
 
@@ -677,5 +678,90 @@ describe("closeTab", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("stopChromeGracefully", () => {
+  function fakeChrome() {
+    const proc = new EventEmitter() as EventEmitter & {
+      exitCode: number | null;
+      signalCode: string | null;
+      killed: boolean;
+    };
+    proc.exitCode = null;
+    proc.signalCode = null;
+    proc.killed = false;
+    return {
+      pid: 4321,
+      port: 9222,
+      process: proc,
+      kill: vi.fn(),
+    };
+  }
+
+  test("closes via CDP without killing when Chrome exits", async () => {
+    const { stopChromeGracefully } = await import("../../src/browser/chromeLifecycle.js");
+    const chrome = fakeChrome();
+    const closeViaCdp = vi.fn(async () => {
+      chrome.process.exitCode = 0;
+      chrome.process.emit("exit", 0);
+    });
+    await stopChromeGracefully(chrome as never, { closeViaCdp, timeoutMs: 50 });
+    expect(closeViaCdp).toHaveBeenCalledWith("127.0.0.1", 9222);
+    expect(chrome.kill).not.toHaveBeenCalled();
+  });
+
+  test("falls back to kill when the CDP close throws", async () => {
+    const { stopChromeGracefully } = await import("../../src/browser/chromeLifecycle.js");
+    const chrome = fakeChrome();
+    const closeViaCdp = vi.fn(async () => {
+      throw new Error("cdp unavailable");
+    });
+    await stopChromeGracefully(chrome as never, { closeViaCdp, timeoutMs: 50 });
+    expect(chrome.kill).toHaveBeenCalledTimes(1);
+  });
+
+  test("falls back to kill when Chrome stays alive past the timeout", async () => {
+    const { stopChromeGracefully } = await import("../../src/browser/chromeLifecycle.js");
+    const chrome = fakeChrome();
+    const closeViaCdp = vi.fn(async () => undefined);
+    await stopChromeGracefully(chrome as never, { closeViaCdp, timeoutMs: 25 });
+    expect(chrome.kill).toHaveBeenCalledTimes(1);
+  });
+
+  test("skips every close path when Chrome already exited", async () => {
+    const { stopChromeGracefully } = await import("../../src/browser/chromeLifecycle.js");
+    const chrome = fakeChrome();
+    chrome.process.exitCode = 0;
+    const closeViaCdp = vi.fn(async () => undefined);
+    await stopChromeGracefully(chrome as never, { closeViaCdp, timeoutMs: 25 });
+    expect(closeViaCdp).not.toHaveBeenCalled();
+    expect(chrome.kill).not.toHaveBeenCalled();
+  });
+});
+
+describe("headless stealth flags", () => {
+  test("parses a Chrome version from --version output", async () => {
+    const { parseChromeVersionForTest } = await import("../../src/browser/chromeLifecycle.js");
+    expect(parseChromeVersionForTest("Google Chrome 145.0.7632.77 ")).toBe("145.0.7632.77");
+    expect(parseChromeVersionForTest("Chromium 134.0.6998.35 snap")).toBe("134.0.6998.35");
+    expect(parseChromeVersionForTest("unrecognized")).toBeNull();
+  });
+
+  test("masks the headless user agent and disables AutomationControlled", async () => {
+    const { buildHeadlessStealthFlagsForTest } =
+      await import("../../src/browser/chromeLifecycle.js");
+    const flags = buildHeadlessStealthFlagsForTest("145.0.7632.77");
+    expect(flags).toContain("--disable-blink-features=AutomationControlled");
+    const ua = flags.find((flag) => flag.startsWith("--user-agent="));
+    expect(ua).toContain("Chrome/145.0.7632.77");
+    expect(ua).not.toContain("Headless");
+  });
+
+  test("omits the user-agent flag when the version is unknown", async () => {
+    const { buildHeadlessStealthFlagsForTest } =
+      await import("../../src/browser/chromeLifecycle.js");
+    const flags = buildHeadlessStealthFlagsForTest(null);
+    expect(flags).toEqual(["--disable-blink-features=AutomationControlled"]);
   });
 });
