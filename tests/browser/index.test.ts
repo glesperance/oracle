@@ -12,6 +12,7 @@ import {
   resolveRemoteTabLeaseProfileDirForTest,
   runBrowserMode,
   runSubmissionWithRecoveryForTest,
+  shouldHandleUnexpectedDisconnectForTest,
   shouldPreferSystemTmpDirForTest,
   shouldPreserveBrowserOnErrorForTest,
 } from "../../src/browser/index.js";
@@ -768,6 +769,16 @@ describe("resolveRemoteTabLeaseProfileDirForTest", () => {
       manualLoginProfileDir: "/tmp/oracle-profile",
     });
     expect(resolveRemoteTabLeaseProfileDirForTest(uncoordinated)).toBeNull();
+  });
+});
+
+describe("shouldHandleUnexpectedDisconnectForTest", () => {
+  test("handles disconnects while work is still attempted", () => {
+    expect(shouldHandleUnexpectedDisconnectForTest("attempted")).toBe(true);
+  });
+
+  test("ignores intentional disconnects after durable completion", () => {
+    expect(shouldHandleUnexpectedDisconnectForTest("complete")).toBe(false);
   });
 });
 

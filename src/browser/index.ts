@@ -840,6 +840,16 @@ export function isLocalChromeHostForTest(host: string): boolean {
   return isLocalChromeHost(host);
 }
 
+function shouldHandleUnexpectedDisconnect(runStatus: "attempted" | "complete"): boolean {
+  return runStatus !== "complete";
+}
+
+export function shouldHandleUnexpectedDisconnectForTest(
+  runStatus: "attempted" | "complete",
+): boolean {
+  return shouldHandleUnexpectedDisconnect(runStatus);
+}
+
 async function closeRemoteConnectionAfterRun(options: {
   connectionClosedUnexpectedly: boolean;
   connection: { close: () => Promise<void> } | null;
@@ -1188,6 +1198,9 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     }
     const disconnectPromise = new Promise<never>((_, reject) => {
       client?.on("disconnect", () => {
+        if (!shouldHandleUnexpectedDisconnect(runStatus)) {
+          return;
+        }
         connectionClosedUnexpectedly = true;
         void (async () => {
           const liveness = await probeChromeTargetLiveness({
