@@ -159,7 +159,7 @@ describe("buildBrowserConfig", () => {
       maxConcurrentTabs: 5,
       cookieSyncWaitMs: 4_000,
       cookieSync: false,
-      headless: undefined,
+      headless: true,
       hideWindow: true,
       keepBrowser: true,
       desiredModel: "GPT-5.2",

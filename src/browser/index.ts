@@ -2506,24 +2506,34 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
     removeDialogHandler?.();
     removeTerminationHooks?.();
     if (!keepBrowserOpen) {
+      let chromeTerminatedByThisRun = false;
       if (!connectionClosedUnexpectedly) {
         try {
-          if (!terminatedRecordedChrome) {
+          if (terminatedRecordedChrome) {
+            chromeTerminatedByThisRun = true;
+          } else {
             await chrome.kill();
+            chromeTerminatedByThisRun = true;
           }
         } catch {
-          // ignore kill failures
+          // ignore kill failures; liveness is probed below instead
         }
       }
       if (manualLogin) {
-        const shouldCleanup = await shouldCleanupManualLoginProfileState(
-          userDataDir,
-          logger.verbose ? logger : undefined,
-          {
-            connectionClosedUnexpectedly,
-            host: chromeHost,
-          },
-        );
+        // When this run terminated Chrome, the DevTools endpoint is dying by
+        // definition; probing it races Chrome's exit and can crash the CLI
+        // with an uncaught undici socket error (setTypeOfService EINVAL on
+        // macOS). Only probe when Chrome's liveness is genuinely unknown.
+        const shouldCleanup = chromeTerminatedByThisRun
+          ? true
+          : await shouldCleanupManualLoginProfileState(
+              userDataDir,
+              logger.verbose ? logger : undefined,
+              {
+                connectionClosedUnexpectedly,
+                host: chromeHost,
+              },
+            );
         if (shouldCleanup) {
           // Preserve the persistent manual-login profile, but clear stale reattach hints.
           await cleanupStaleProfileState(userDataDir, logger, { lockRemovalMode: "never" }).catch(

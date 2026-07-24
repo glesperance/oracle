@@ -243,7 +243,9 @@ export async function buildBrowserConfig(
     cookieNames,
     inlineCookies: inline?.cookies,
     inlineCookiesSource: inline?.source ?? null,
-    headless: undefined, // disable headless; Cloudflare blocks it
+    // Headless is opt-in (--browser-headless or browser.headless config): upstream
+    // disabled it by default because Cloudflare may challenge headless Chrome.
+    headless: options.browserHeadless === true ? true : undefined,
     keepBrowser: options.browserKeepBrowser ? true : undefined,
     manualLogin: options.browserManualLogin === undefined ? undefined : options.browserManualLogin,
     manualLoginProfileDir: options.browserManualLoginProfileDir ?? undefined,

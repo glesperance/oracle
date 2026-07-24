@@ -8,6 +8,24 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import * as profileState from "../../src/browser/profileState.js";
 
 describe("profileState", () => {
+  test("verifyDevToolsReachable disables keep-alive on the probe socket", async () => {
+    const originalFetch = globalThis.fetch;
+    const calls: { url: string; init?: RequestInit }[] = [];
+    globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+      calls.push({ url: String(url), init });
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    try {
+      const result = await profileState.verifyDevToolsReachable({ port: 9222 });
+      expect(result).toEqual({ ok: true });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.url).toBe("http://127.0.0.1:9222/json/version");
+      expect(calls[0]?.init?.headers).toEqual({ connection: "close" });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("writes DevToolsActivePort to both root and Default", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "oracle-profile-"));
     try {

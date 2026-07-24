@@ -319,7 +319,13 @@ export async function verifyDevToolsReachable({
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
-      const response = await fetch(versionUrl, { signal: controller.signal });
+      // Connection: close keeps the DevTools probe socket out of undici's
+      // keep-alive pool; an idle pooled socket crashes the CLI with
+      // setTypeOfService EINVAL when Chrome exits during teardown.
+      const response = await fetch(versionUrl, {
+        signal: controller.signal,
+        headers: { connection: "close" },
+      });
       clearTimeout(timeout);
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
