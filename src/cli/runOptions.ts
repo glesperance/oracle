@@ -67,7 +67,7 @@ export function resolveRunOptionsFromConfig({
       ? normalizeChatGptModelForBrowser(inferModelFromLabel(cliModelArg))
       : apiModel;
   const isCodex = apiModel.startsWith("gpt-5.1-codex");
-  const isClaude = apiModel.startsWith("claude");
+  const isClaude = apiModel.startsWith("claude") && apiModel !== "claude-research";
   const isGrok = apiModel.startsWith("grok");
 
   const engineWasBrowser = resolvedEngine === "browser";
@@ -77,7 +77,8 @@ export function resolveRunOptionsFromConfig({
       : [apiModel];
   const browserCompatibilityModels: ModelName[] =
     normalizedRequestedModels.length > 0 ? allModels : [browserModel];
-  const isBrowserCompatible = (m: string) => m.startsWith("gpt-") || m.startsWith("gemini");
+  const isBrowserCompatible = (m: string) =>
+    m.startsWith("gpt-") || m.startsWith("gemini") || m === "claude-research";
   const hasNonBrowserCompatibleTarget =
     browserEngineRequested && browserCompatibilityModels.some((m) => !isBrowserCompatible(m));
   if (hasNonBrowserCompatibleTarget) {

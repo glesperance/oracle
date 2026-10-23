@@ -5,6 +5,7 @@
 ### Added
 
 - API: add `--reasoning-mode standard|pro` and `--reasoning-effort none|low|medium|high|xhigh|max` for GPT-5.6 API runs, including session persistence, long-run detach/timeout behavior, and fail-closed validation for unsupported models and Chat Completions proxy routes. GPT-5.6 Pro remains a mode (`--model gpt-5.6-sol --reasoning-mode pro --reasoning-effort max`), not a separate model slug.
+- Browser: `--model claude-research` runs a claude.ai Research query headless on a copy of the signed-in Oracle profile, verifies the model/effort picker (default Opus 5.5 High, override with `ORACLE_CLAUDE_MODEL`) and Research mode before send, and saves the report artifact with its sources.
 
 ### Fixed
 

@@ -224,7 +224,7 @@ export function resolveApiModel(modelValue: string): ModelName {
   const normalized = normalizeModelOption(modelValue).toLowerCase();
   // Engine routing also calls this for browser runs. Preserve the literal slug
   // without registering API metadata or applying the generic Pro alias below.
-  if (normalized === "gpt-6-pro") {
+  if (normalized === "gpt-6-pro" || normalized === "claude-research") {
     return normalized;
   }
   if (normalized in MODEL_CONFIGS) {
@@ -332,6 +332,9 @@ export function inferModelFromLabel(modelValue: string): ModelName {
   const normalized = normalizeModelOption(modelValue).toLowerCase();
   if (!normalized) {
     return DEFAULT_MODEL;
+  }
+  if (normalized === "claude-research") {
+    return normalized;
   }
   if (normalized in MODEL_CONFIGS) {
     return normalized as ModelName;

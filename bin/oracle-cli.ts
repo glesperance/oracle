@@ -1946,11 +1946,12 @@ async function runRootCommand(options: CliOptions): Promise<void> {
   const primaryModelCandidate = normalizedMultiModels[0] ?? resolvedModelCandidate;
   const isGemini = primaryModelCandidate.startsWith("gemini");
   const isCodex = primaryModelCandidate.startsWith("gpt-5.1-codex");
-  const isClaude = primaryModelCandidate.startsWith("claude");
+  const isClaudeResearch = primaryModelCandidate === "claude-research";
+  const isClaude = primaryModelCandidate.startsWith("claude") && !isClaudeResearch;
   const userForcedBrowser = options.browser || options.engine === "browser";
   const browserExplicitlyRequested = browserEngineRequested;
   const isBrowserCompatible = (model: string) =>
-    model.startsWith("gpt-") || model.startsWith("gemini");
+    model.startsWith("gpt-") || model.startsWith("gemini") || model === "claude-research";
   const hasNonBrowserCompatibleTarget =
     normalizedMultiModels.length > 0
       ? normalizedMultiModels.some((model) => !isBrowserCompatible(model))
@@ -2255,6 +2256,14 @@ async function runRootCommand(options: CliOptions): Promise<void> {
       executeBrowser: createRemoteBrowserExecutor({ host: remoteHost, token: remoteToken }),
     };
     console.log(chalk.dim(`Routing browser automation to remote host ${remoteHost}`));
+  } else if (browserConfig && activeModel === "claude-research") {
+    const { createClaudeWebExecutor } = await import("../src/claude-web/index.js");
+    browserDeps = {
+      executeBrowser: createClaudeWebExecutor({
+        modelLabel: process.env.ORACLE_CLAUDE_MODEL ?? undefined,
+      }),
+    };
+    console.log(chalk.dim("Using claude.ai Research for browser automation"));
   } else if (browserConfig && activeModel.startsWith("gemini")) {
     const { createGeminiWebExecutor } = await import("../src/gemini-web/index.js");
     browserDeps = {
@@ -2579,6 +2588,14 @@ async function restartSession(sessionId: string, options: RestartCommandOptions)
       executeBrowser: createRemoteBrowserExecutor({ host: remoteHost, token: remoteToken }),
     };
     console.log(chalk.dim(`Routing browser automation to remote host ${remoteHost}`));
+  } else if (browserConfig && runOptions.model === "claude-research") {
+    const { createClaudeWebExecutor } = await import("../src/claude-web/index.js");
+    browserDeps = {
+      executeBrowser: createClaudeWebExecutor({
+        modelLabel: process.env.ORACLE_CLAUDE_MODEL ?? undefined,
+      }),
+    };
+    console.log(chalk.dim("Using claude.ai Research for browser automation"));
   } else if (browserConfig && runOptions.model.startsWith("gemini")) {
     const { createGeminiWebExecutor } = await import("../src/gemini-web/index.js");
     browserDeps = {
