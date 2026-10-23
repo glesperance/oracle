@@ -7,9 +7,12 @@ export function buildConversationTurnListExpression(rootExpression = "document")
   return `(() => {
     const root = ${rootExpression};
     const containers = Array.from(root.querySelectorAll(${containerSelector}));
-    return containers.length > 0
-      ? containers
-      : Array.from(root.querySelectorAll(${fallbackSelector}));
+    if (containers.length > 0) return containers;
+    const legacyTurns = Array.from(root.querySelectorAll(${fallbackSelector}));
+    if (legacyTurns.length > 0) return legacyTurns;
+    // The current UI identifies message containers by search-unit keys instead
+    // of conversation-turn test IDs. Do not mix both layouts and double-count.
+    return Array.from(root.querySelectorAll('[data-chatgpt-search-unit-key]'));
   })()`;
 }
 

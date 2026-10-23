@@ -733,7 +733,7 @@ function buildCompletionVisibilityExpression(
       if (role === 'assistant') return true;
       const testId = (node.getAttribute('data-testid') || '').toLowerCase();
       if (testId.includes('assistant')) return true;
-      return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
+      return Boolean(node.matches?.(ASSISTANT_SELECTOR) || node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
     };
 
     const turns = ${buildConversationTurnListExpression()};
@@ -756,7 +756,8 @@ function buildCompletionVisibilityExpression(
       ];
       const identityMatches = identityNodes.some((node) =>
         (EXPECTED_MESSAGE_ID && node.getAttribute?.('data-message-id') === EXPECTED_MESSAGE_ID) ||
-        (EXPECTED_TURN_ID && node.getAttribute?.('data-testid') === EXPECTED_TURN_ID),
+        (EXPECTED_TURN_ID && (node.getAttribute?.('data-testid') === EXPECTED_TURN_ID ||
+          node.getAttribute?.('data-chatgpt-search-unit-key') === EXPECTED_TURN_ID)),
       );
       if (!identityMatches) return false;
     } else if (MIN_TURN_INDEX < 0 || lastAssistantIndex < MIN_TURN_INDEX) {
@@ -766,6 +767,13 @@ function buildCompletionVisibilityExpression(
     }
 
     if (lastAssistantTurn.querySelector('${FINISHED_ACTIONS_SELECTOR}')) return true;
+    // Current UI places the action bar beside the keyed assistant message.
+    // Only inspect a wrapper owning exactly this assistant, not a shared ancestor.
+    const wrapper = lastAssistantTurn.closest('[data-talvt-turn-state]');
+    const keyedAssistants = wrapper?.querySelectorAll('[data-chatgpt-search-unit-key$=":assistant"]');
+    if (keyedAssistants?.length === 1 && keyedAssistants[0] === lastAssistantTurn &&
+        wrapper.getAttribute('data-talvt-turn-state') === 'complete' &&
+        wrapper.querySelector('.turn-action-controls button[aria-label="Copy"]')) return true;
     const markdowns = lastAssistantTurn.querySelectorAll('.markdown');
     return Array.from(markdowns).some((node) => (node.textContent || '').trim() === 'Done');
   })()`;
@@ -959,7 +967,7 @@ function buildResponseObserverExpression(
       if (role === 'assistant') return true;
       const testId = (node.getAttribute('data-testid') || '').toLowerCase();
       if (testId.includes('assistant')) return true;
-      return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
+      return Boolean(node.matches?.(ASSISTANT_SELECTOR) || node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
     };
 
     const MIN_TURN_INDEX = ${minTurnLiteral};
@@ -1174,7 +1182,7 @@ function buildAssistantExtractor(functionName: string): string {
       if (testId.includes('assistant')) {
         return true;
       }
-      return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
+      return Boolean(node.matches?.(ASSISTANT_SELECTOR) || node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
     };
 
     const expandCollapsibles = (root) => {
@@ -1204,6 +1212,7 @@ function buildAssistantExtractor(functionName: string): string {
       expandCollapsibles(messageRoot);
       const preferred =
         (messageRoot.matches?.('.markdown') || messageRoot.matches?.('[data-message-content]') ? messageRoot : null) ||
+        messageRoot.querySelector('[data-markdown-text-style="assistant-message"]') ||
         messageRoot.querySelector('.markdown') ||
         messageRoot.querySelector('[data-message-content]') ||
         messageRoot.querySelector('[data-testid*="message"]') ||
@@ -1219,7 +1228,7 @@ function buildAssistantExtractor(functionName: string): string {
       const text = innerText.trim().length > 0 ? innerText : textContent;
       const html = contentRoot?.innerHTML ?? '';
       const messageId = messageRoot.getAttribute('data-message-id');
-      const turnId = messageRoot.getAttribute('data-testid');
+      const turnId = turn.getAttribute('data-testid') || turn.getAttribute('data-chatgpt-search-unit-key') || messageRoot.getAttribute('data-testid');
       const generatedImages = Array.from(messageRoot.querySelectorAll('img')).filter((img) =>
         String(img?.src || '').includes('/backend-api/estuary/content?id=file_')
       );
@@ -1422,7 +1431,7 @@ function buildCopyExpression(meta: { messageId?: string | null; turnId?: string 
         if (role === 'assistant') return true;
         const testId = (node.getAttribute('data-testid') || '').toLowerCase();
         if (testId.includes('assistant')) return true;
-        return Boolean(node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
+        return Boolean(node.matches?.(ASSISTANT_SELECTOR) || node.querySelector(ASSISTANT_SELECTOR) || node.querySelector('[data-testid*="assistant"]'));
       };
       const turns = ${buildConversationTurnListExpression()};
       for (let i = turns.length - 1; i >= 0; i -= 1) {

@@ -187,14 +187,14 @@ function buildTabInspectionExpression(): string {
       const assistantTurns = turns.filter((turn) => {
         const role = normalize(turn.getAttribute('data-message-author-role') || turn.getAttribute('data-turn')).toLowerCase();
         if (role === 'assistant') return true;
-        return Boolean(turn.querySelector(ASSISTANT_ROLE_SELECTOR));
+        return Boolean(turn.matches?.(ASSISTANT_ROLE_SELECTOR) || turn.querySelector(ASSISTANT_ROLE_SELECTOR));
       });
       const fallbackUserTurns = Array.from(
         document.querySelectorAll('[data-message-author-role="user"], [data-turn="user"]'),
       );
       const userTurns = turns.filter((turn) => {
         const role = normalize(turn.getAttribute('data-message-author-role') || turn.getAttribute('data-turn')).toLowerCase();
-        if (role === 'user') return true;
+        if (role === 'user' || turn.matches?.('[data-chatgpt-search-unit-key$=":user"]')) return true;
         return Boolean(
           turn.querySelector('[data-message-author-role="user"], [data-turn="user"]'),
         );
