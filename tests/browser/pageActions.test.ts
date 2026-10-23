@@ -1726,6 +1726,207 @@ describe("uploadAttachmentFile", () => {
     transferSpy.mockRestore();
   });
 
+  test("assigns every attachment once to a generic multiple input in submission order", async () => {
+    const files = [
+      "/tmp/oracle-attachment-01.txt",
+      "/tmp/oracle-attachment-02.txt",
+      "/tmp/oracle-attachment-03.txt",
+    ];
+    const dom = {
+      getDocument: vi.fn().mockResolvedValue({ root: { nodeId: 1 } }),
+      querySelector: vi.fn().mockResolvedValue({ nodeId: 2 }),
+      setFileInputFiles: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ChromeClient["DOM"];
+    const evaluate = vi.fn().mockImplementation(async (params: { expression?: string }) => {
+      const expression = String(params?.expression ?? "");
+      if (expression.includes("const isImageOnly")) {
+        return { result: { value: { found: true } } };
+      }
+      if (expression.includes("input.dispatchEvent(new Event('input'")) {
+        return { result: { value: true } };
+      }
+      return { result: { value: null } };
+    });
+    const runtime = { evaluate } as unknown as ChromeClient["Runtime"];
+
+    await expect(
+      attachments.uploadAttachmentFiles(
+        { runtime, dom },
+        files.map((file) => ({ path: file, displayPath: file.split("/").at(-1) ?? file })),
+        logger,
+      ),
+    ).resolves.toEqual({ batched: true });
+
+    expect(dom.setFileInputFiles).toHaveBeenCalledTimes(1);
+    expect(dom.setFileInputFiles).toHaveBeenCalledWith({ nodeId: 2, files });
+    expect(dom.querySelector).toHaveBeenCalledWith({
+      nodeId: 1,
+      selector: 'input[type="file"][multiple][data-oracle-batch-upload-candidate="true"]',
+    });
+    const dispatchCalls = evaluate.mock.calls.filter(([params]) =>
+      String((params as { expression?: string })?.expression ?? "").includes(
+        "input.dispatchEvent(new Event('input'",
+      ),
+    );
+    expect(dispatchCalls).toHaveLength(1);
+    const dispatchExpression = String(
+      (dispatchCalls[0]?.[0] as { expression?: string } | undefined)?.expression ?? "",
+    );
+    expect(dispatchExpression.match(/dispatchEvent\(new Event\('input'/g)).toHaveLength(1);
+    expect(dispatchExpression.match(/dispatchEvent\(new Event\('change'/g)).toHaveLength(1);
+  });
+
+  test("keeps the one-file path on the existing uploader", async () => {
+    const dom = {
+      getDocument: vi.fn(),
+      querySelector: vi.fn(),
+      setFileInputFiles: vi.fn(),
+    } as unknown as ChromeClient["DOM"];
+    const runtime = {
+      evaluate: vi.fn().mockImplementation(async (params: { expression?: string }) => {
+        const expression = String(params?.expression ?? "");
+        if (
+          expression.includes("const normalizedExpected") &&
+          expression.includes("matchesExpected")
+        ) {
+          return {
+            result: {
+              value: {
+                ui: true,
+                input: false,
+                inputCount: 0,
+                chipCount: 1,
+                chipSignature: "oracle-browser-smoke.txt",
+                uploading: false,
+                fileCount: 1,
+              },
+            },
+          };
+        }
+        return { result: { value: null } };
+      }),
+    } as unknown as ChromeClient["Runtime"];
+
+    await expect(
+      attachments.uploadAttachmentFiles(
+        { runtime, dom },
+        [{ path: "/tmp/oracle-browser-smoke.txt", displayPath: "oracle-browser-smoke.txt" }],
+        logger,
+      ),
+    ).resolves.toEqual({ batched: false });
+
+    expect(dom.getDocument).not.toHaveBeenCalled();
+    expect(dom.setFileInputFiles).not.toHaveBeenCalled();
+    expect(logger).toHaveBeenCalledWith(expect.stringMatching(/Attachment already present/i));
+  });
+
+  test("does not advance a non-multiple fallback after input-only evidence", async () => {
+    vi.useFakeTimers();
+    try {
+      let fileInputWasSet = false;
+      const first = "/tmp/first-attachment.txt";
+      const second = "/tmp/second-attachment.txt";
+      const dom = {
+        getDocument: vi.fn().mockResolvedValue({ root: { nodeId: 1 } }),
+        querySelector: vi.fn().mockResolvedValue({ nodeId: 2 }),
+        setFileInputFiles: vi.fn().mockImplementation(async ({ files }: { files: string[] }) => {
+          if (files.length > 0) fileInputWasSet = true;
+        }),
+      } as unknown as ChromeClient["DOM"];
+      const runtime = {
+        evaluate: vi.fn().mockImplementation(async (params: { expression?: string }) => {
+          const expression = String(params?.expression ?? "");
+          if (expression.includes("const isImageOnly")) {
+            return { result: { value: { found: false } } };
+          }
+          if (expression.includes("baselineChipCount") && expression.includes("baselineChips")) {
+            return {
+              result: {
+                value: {
+                  ok: true,
+                  baselineChipCount: 0,
+                  baselineChips: [],
+                  baselineUploading: false,
+                  baselineInputCount: 0,
+                  baselineFileCount: 0,
+                  order: [0],
+                },
+              },
+            };
+          }
+          if (
+            expression.includes('input[type="file"][data-oracle-upload-idx') &&
+            expression.includes("names")
+          ) {
+            return {
+              result: {
+                value: fileInputWasSet
+                  ? { names: ["first-attachment.txt"], value: "first-attachment.txt", count: 1 }
+                  : { names: [], value: "", count: 0 },
+              },
+            };
+          }
+          if (
+            expression.includes("chipCount") &&
+            expression.includes("composerText") &&
+            expression.includes("uploading")
+          ) {
+            return {
+              result: {
+                value: {
+                  chipCount: 0,
+                  chips: [],
+                  inputNames: fileInputWasSet ? ["first-attachment.txt"] : [],
+                  composerText: "",
+                  uploading: false,
+                },
+              },
+            };
+          }
+          if (expression.includes("const normalized =") && expression.includes("file-count")) {
+            return { result: { value: { found: false } } };
+          }
+          if (
+            expression.includes("const normalizedExpected") &&
+            expression.includes("matchesExpected")
+          ) {
+            return {
+              result: {
+                value: {
+                  ui: false,
+                  input: false,
+                  inputCount: 0,
+                  chipCount: 0,
+                  chipSignature: "",
+                  uploading: false,
+                  fileCount: 0,
+                },
+              },
+            };
+          }
+          return { result: { value: null } };
+        }),
+      } as unknown as ChromeClient["Runtime"];
+
+      const upload = attachments.uploadAttachmentFiles(
+        { runtime, dom },
+        [
+          { path: first, displayPath: "first-attachment.txt" },
+          { path: second, displayPath: "second-attachment.txt" },
+        ],
+        logger,
+      );
+      const assertion = expect(upload).rejects.toThrow(/did not register|not durably represented/i);
+      await vi.runAllTimersAsync();
+      await assertion;
+
+      expect(dom.setFileInputFiles).toHaveBeenCalledTimes(1);
+      expect(dom.setFileInputFiles).toHaveBeenCalledWith({ nodeId: 2, files: [first] });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test.skip("selects DOM input and uploads file", async () => {
     logger.mockClear();
     vi.spyOn(attachments, "waitForAttachmentVisible").mockResolvedValue(undefined);

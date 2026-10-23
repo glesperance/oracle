@@ -40,11 +40,11 @@ import {
   waitForAssistantResponse,
   captureAssistantMarkdown,
   clearComposerAttachments,
-  uploadAttachmentFile,
   waitForAttachmentCompletion,
   waitForUserTurnAttachments,
   readAssistantSnapshot,
 } from "./pageActions.js";
+import { uploadAttachmentFiles } from "./actions/attachments.js";
 import { INPUT_SELECTORS } from "./constants.js";
 import { uploadAttachmentViaDataTransfer } from "./actions/remoteFileTransfer.js";
 import { ensureThinkingTime } from "./actions/thinkingTime.js";
@@ -1553,7 +1553,6 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         name: path.basename(a.path),
         generatedBundle: a.generatedBundle === true,
       }));
-      let inputOnlyAttachments = false;
       await raceWithDisconnect(clearPromptComposer(Runtime, logger));
       await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
       if (submissionAttachments.length > 0) {
@@ -1561,31 +1560,20 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
           throw new Error("Chrome DOM domain unavailable while uploading attachments.");
         }
         await clearComposerAttachments(Runtime, 5_000, logger);
-        for (
-          let attachmentIndex = 0;
-          attachmentIndex < submissionAttachments.length;
-          attachmentIndex += 1
-        ) {
-          const attachment = submissionAttachments[attachmentIndex];
-          logger(`Uploading attachment: ${attachment.displayPath}`);
-          const uiConfirmed = await uploadAttachmentFile(
-            { runtime: Runtime, dom: DOM, input: Input },
-            attachment,
-            logger,
-            { expectedCount: attachmentIndex + 1 },
-          );
-          if (!uiConfirmed) {
-            inputOnlyAttachments = true;
-          }
-          await delay(500);
-        }
+        await uploadAttachmentFiles(
+          { runtime: Runtime, dom: DOM, input: Input },
+          submissionAttachments,
+          logger,
+        );
         // Scale timeout based on number of files: base 45s + 20s per additional file.
         const baseTimeout = config.inputTimeoutMs ?? 30_000;
         const perFileTimeout = 20_000;
         const waitBudget =
           Math.max(baseTimeout, 45_000) + (submissionAttachments.length - 1) * perFileTimeout;
         const attachmentWaitBudget = Math.max(config.attachmentTimeoutMs ?? 0, waitBudget);
-        await waitForAttachmentCompletion(Runtime, attachmentWaitBudget, attachmentNames, logger);
+        await waitForAttachmentCompletion(Runtime, attachmentWaitBudget, attachmentNames, logger, {
+          requireExactNames: submissionAttachments.length > 1,
+        });
         logger("All attachments uploaded");
       }
       if (deepResearch) {
@@ -1637,29 +1625,21 @@ export async function runBrowserMode(options: BrowserRunOptions): Promise<Browse
         baselineTurns = providerBaselineTurns;
       }
       if (attachmentNames.length > 0) {
-        if (inputOnlyAttachments) {
-          logger(
-            "Attachment UI did not render before send; skipping user-turn attachment verification.",
-          );
+        const verified = await waitForUserTurnAttachments(
+          Runtime,
+          attachmentNames,
+          20_000,
+          logger,
+          {
+            minTurnIndex: baselineTurns ?? undefined,
+            expectedPrompt: prompt,
+            expectedConversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
+          },
+        );
+        if (!verified) {
+          logger("Sent user message did not expose attachment UI; continuing after upload check.");
         } else {
-          const verified = await waitForUserTurnAttachments(
-            Runtime,
-            attachmentNames,
-            20_000,
-            logger,
-            {
-              minTurnIndex: baselineTurns ?? undefined,
-              expectedPrompt: prompt,
-              expectedConversationId: lastUrl ? extractConversationIdFromUrl(lastUrl) : undefined,
-            },
-          );
-          if (!verified) {
-            logger(
-              "Sent user message did not expose attachment UI; continuing after upload check.",
-            );
-          } else {
-            logger("Verified attachments present on sent user message");
-          }
+          logger("Verified attachments present on sent user message");
         }
       }
       return {

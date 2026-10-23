@@ -6,17 +6,97 @@ import { delay } from "../utils.js";
 import { logDomFailure } from "../domDebug.js";
 import { transferAttachmentViaDataTransfer } from "./attachmentDataTransfer.js";
 
+type AttachmentUploadDeps = {
+  runtime: ChromeClient["Runtime"];
+  dom?: ChromeClient["DOM"];
+  input?: ChromeClient["Input"];
+};
+
+type AttachmentUploadOptions = {
+  expectedCount?: number;
+  requireUi?: boolean;
+};
+
+const isImageAttachmentPath = (filePath: string): boolean =>
+  /\.(png|jpe?g|gif|webp|bmp|svg|heic|heif)$/i.test(path.basename(filePath));
+
+async function openAttachmentMenu({ runtime, input }: AttachmentUploadDeps): Promise<void> {
+  // New ChatGPT UI hides the real file input behind a composer "+" menu; click it pre-emptively.
+  // Learned: synthetic `.click()` is sometimes ignored (isTrusted checks). Prefer a CDP mouse click when possible.
+  const clickPlusTrusted = async (): Promise<boolean> => {
+    if (!input || typeof input.dispatchMouseEvent !== "function") return false;
+    const locate = await runtime
+      .evaluate({
+        expression: `(() => {
+          const selectors = [
+            '#composer-plus-btn',
+            'button[data-testid="composer-plus-btn"]',
+            '[data-testid*="plus"]',
+            'button[aria-label*="add"]',
+            'button[aria-label*="attachment"]',
+            'button[aria-label*="file"]',
+          ];
+          for (const selector of selectors) {
+            const el = document.querySelector(selector);
+            if (!(el instanceof HTMLElement)) continue;
+            const rect = el.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) continue;
+            el.scrollIntoView({ block: 'center', inline: 'center' });
+            const nextRect = el.getBoundingClientRect();
+            return { ok: true, x: nextRect.left + nextRect.width / 2, y: nextRect.top + nextRect.height / 2 };
+          }
+          return { ok: false };
+        })()`,
+        returnByValue: true,
+      })
+      .then((res) => res?.result?.value as { ok?: boolean; x?: number; y?: number } | undefined)
+      .catch(() => undefined);
+    if (!locate?.ok || typeof locate.x !== "number" || typeof locate.y !== "number") return false;
+    const x = locate.x;
+    const y = locate.y;
+    await input.dispatchMouseEvent({ type: "mouseMoved", x, y });
+    await input.dispatchMouseEvent({ type: "mousePressed", x, y, button: "left", clickCount: 1 });
+    await input.dispatchMouseEvent({ type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+    return true;
+  };
+
+  const clickedTrusted = await clickPlusTrusted().catch(() => false);
+  if (!clickedTrusted) {
+    await Promise.resolve(
+      runtime.evaluate({
+        expression: `(() => {
+          const selectors = [
+            '#composer-plus-btn',
+            'button[data-testid="composer-plus-btn"]',
+            '[data-testid*="plus"]',
+            'button[aria-label*="add"]',
+            'button[aria-label*="attachment"]',
+            'button[aria-label*="file"]',
+          ];
+          for (const selector of selectors) {
+            const el = document.querySelector(selector);
+            if (el instanceof HTMLElement) {
+              el.click();
+              return true;
+            }
+          }
+          return false;
+        })()`,
+        returnByValue: true,
+      }),
+    ).catch(() => undefined);
+  }
+
+  await delay(350);
+}
+
 export async function uploadAttachmentFile(
-  deps: {
-    runtime: ChromeClient["Runtime"];
-    dom?: ChromeClient["DOM"];
-    input?: ChromeClient["Input"];
-  },
+  deps: AttachmentUploadDeps,
   attachment: BrowserAttachment,
   logger: BrowserLogger,
-  options?: { expectedCount?: number },
+  options?: AttachmentUploadOptions,
 ): Promise<boolean> {
-  const { runtime, dom, input } = deps;
+  const { runtime, dom } = deps;
   if (!dom) {
     throw new Error("DOM domain unavailable while uploading attachments.");
   }
@@ -24,6 +104,7 @@ export async function uploadAttachmentFile(
     typeof options?.expectedCount === "number" && Number.isFinite(options.expectedCount)
       ? Math.max(0, Math.floor(options.expectedCount))
       : 0;
+  const requireUi = options?.requireUi === true;
 
   const readAttachmentSignals = async (name: string) => {
     const check = await runtime.evaluate({
@@ -298,73 +379,7 @@ export async function uploadAttachmentFile(
     };
   };
 
-  // New ChatGPT UI hides the real file input behind a composer "+" menu; click it pre-emptively.
-  // Learned: synthetic `.click()` is sometimes ignored (isTrusted checks). Prefer a CDP mouse click when possible.
-  const clickPlusTrusted = async (): Promise<boolean> => {
-    if (!input || typeof input.dispatchMouseEvent !== "function") return false;
-    const locate = await runtime
-      .evaluate({
-        expression: `(() => {
-          const selectors = [
-            '#composer-plus-btn',
-            'button[data-testid="composer-plus-btn"]',
-            '[data-testid*="plus"]',
-            'button[aria-label*="add"]',
-            'button[aria-label*="attachment"]',
-            'button[aria-label*="file"]',
-          ];
-          for (const selector of selectors) {
-            const el = document.querySelector(selector);
-            if (!(el instanceof HTMLElement)) continue;
-            const rect = el.getBoundingClientRect();
-            if (rect.width <= 0 || rect.height <= 0) continue;
-            el.scrollIntoView({ block: 'center', inline: 'center' });
-            const nextRect = el.getBoundingClientRect();
-            return { ok: true, x: nextRect.left + nextRect.width / 2, y: nextRect.top + nextRect.height / 2 };
-          }
-          return { ok: false };
-        })()`,
-        returnByValue: true,
-      })
-      .then((res) => res?.result?.value as { ok?: boolean; x?: number; y?: number } | undefined)
-      .catch(() => undefined);
-    if (!locate?.ok || typeof locate.x !== "number" || typeof locate.y !== "number") return false;
-    const x = locate.x;
-    const y = locate.y;
-    await input.dispatchMouseEvent({ type: "mouseMoved", x, y });
-    await input.dispatchMouseEvent({ type: "mousePressed", x, y, button: "left", clickCount: 1 });
-    await input.dispatchMouseEvent({ type: "mouseReleased", x, y, button: "left", clickCount: 1 });
-    return true;
-  };
-
-  const clickedTrusted = await clickPlusTrusted().catch(() => false);
-  if (!clickedTrusted) {
-    await Promise.resolve(
-      runtime.evaluate({
-        expression: `(() => {
-          const selectors = [
-            '#composer-plus-btn',
-            'button[data-testid="composer-plus-btn"]',
-            '[data-testid*="plus"]',
-            'button[aria-label*="add"]',
-            'button[aria-label*="attachment"]',
-            'button[aria-label*="file"]',
-          ];
-          for (const selector of selectors) {
-            const el = document.querySelector(selector);
-            if (el instanceof HTMLElement) {
-              el.click();
-              return true;
-            }
-          }
-          return false;
-        })()`,
-        returnByValue: true,
-      }),
-    ).catch(() => undefined);
-  }
-
-  await delay(350);
+  await openAttachmentMenu(deps);
 
   const normalizeForMatch = (value: string): string =>
     String(value || "")
@@ -381,7 +396,7 @@ export async function uploadAttachmentFile(
     if (expectedNameNoExt.length >= 6 && normalized.includes(expectedNameNoExt)) return true;
     return false;
   };
-  const isImageAttachment = /\.(png|jpe?g|gif|webp|bmp|svg|heic|heif)$/i.test(expectedName);
+  const isImageAttachment = isImageAttachmentPath(attachment.path);
   const attachmentUiTimeoutMs = 25_000;
   const attachmentUiSignalWaitMs = 5_000;
 
@@ -407,15 +422,30 @@ export async function uploadAttachmentFile(
     expectedCount > 0 ? initialSignals.inputCount >= expectedCount : Boolean(initialSignals.input);
   if (
     expectedCount > 0 &&
-    (initialSignals.fileCount >= expectedCount || initialSignals.inputCount >= expectedCount)
+    (initialSignals.fileCount >= expectedCount ||
+      (!requireUi && initialSignals.inputCount >= expectedCount))
   ) {
-    const satisfiedCount = Math.max(initialSignals.fileCount, initialSignals.inputCount);
+    const satisfiedCount = requireUi
+      ? initialSignals.fileCount
+      : Math.max(initialSignals.fileCount, initialSignals.inputCount);
     logger(
       `Attachment already present: composer shows ${satisfiedCount} file${satisfiedCount === 1 ? "" : "s"}`,
     );
     return true;
   }
   if (initialInputSatisfied || initialSignals.input) {
+    if (requireUi) {
+      if (
+        await waitForAttachmentAnchored(runtime, expectedName, attachmentUiTimeoutMs, {
+          requireUi: true,
+          expectedCount,
+        })
+      ) {
+        logger(`Attachment already present: ${path.basename(attachment.path)}`);
+        return true;
+      }
+      throw new Error("Attachment input is not durably represented in the ChatGPT composer.");
+    }
     logger(`Attachment already queued in file input: ${path.basename(attachment.path)}`);
     return true;
   }
@@ -1161,6 +1191,15 @@ export async function uploadAttachmentFile(
     const inputHasFile =
       inputNameCandidates.some((name) => matchesExpectedName(name)) ||
       (lastInputValue && matchesExpectedName(lastInputValue));
+    if (
+      requireUi &&
+      !(await waitForAttachmentAnchored(runtime, expectedName, attachmentUiTimeoutMs, {
+        requireUi: true,
+        expectedCount,
+      }))
+    ) {
+      throw new Error("Attachment input is not durably represented in the ChatGPT composer.");
+    }
     await waitForAttachmentVisible(runtime, expectedName, attachmentUiTimeoutMs, logger);
     logger(
       inputHasFile
@@ -1174,7 +1213,12 @@ export async function uploadAttachmentFile(
   const inputHasFile =
     inputNameCandidates.some((name) => matchesExpectedName(name)) ||
     (lastInputValue && matchesExpectedName(lastInputValue));
-  if (await waitForAttachmentAnchored(runtime, expectedName, attachmentUiTimeoutMs)) {
+  if (
+    await waitForAttachmentAnchored(runtime, expectedName, attachmentUiTimeoutMs, {
+      requireUi,
+      expectedCount,
+    })
+  ) {
     await waitForAttachmentVisible(runtime, expectedName, attachmentUiTimeoutMs, logger);
     logger(
       inputHasFile
@@ -1184,7 +1228,7 @@ export async function uploadAttachmentFile(
     return true;
   }
 
-  if (inputConfirmed || inputHasFile) {
+  if (!requireUi && (inputConfirmed || inputHasFile)) {
     logger(
       "Attachment input accepted the file but UI did not acknowledge it; continuing with input confirmation only.",
     );
@@ -1193,6 +1237,136 @@ export async function uploadAttachmentFile(
 
   await logDomFailure(runtime, logger, "file-upload-missing");
   throw new Error("Attachment did not register with the ChatGPT composer in time.");
+}
+
+export async function uploadAttachmentFiles(
+  deps: AttachmentUploadDeps,
+  attachments: BrowserAttachment[],
+  logger: BrowserLogger,
+): Promise<{ batched: boolean }> {
+  const { runtime, dom } = deps;
+  if (!dom) {
+    throw new Error("DOM domain unavailable while uploading attachments.");
+  }
+  if (attachments.length === 0) {
+    return { batched: false };
+  }
+  if (attachments.length === 1) {
+    logger(`Uploading attachment: ${attachments[0].displayPath}`);
+    await uploadAttachmentFile(deps, attachments[0], logger, { expectedCount: 1 });
+    return { batched: false };
+  }
+
+  await openAttachmentMenu(deps);
+  const documentNode = await dom.getDocument();
+  const batchCandidate = await runtime.evaluate({
+    expression: `(() => {
+      const promptSelectors = ${JSON.stringify(INPUT_SELECTORS)};
+      const sendSelectors = ${JSON.stringify(SEND_BUTTON_SELECTORS)};
+      const findPromptNode = () => {
+        for (const selector of promptSelectors) {
+          const nodes = Array.from(document.querySelectorAll(selector));
+          for (const node of nodes) {
+            if (!(node instanceof HTMLElement)) continue;
+            const rect = node.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) return node;
+          }
+        }
+        for (const selector of promptSelectors) {
+          const node = document.querySelector(selector);
+          if (node) return node;
+        }
+        return null;
+      };
+      const promptNode = findPromptNode();
+      const composerRoot =
+        promptNode?.closest('[data-testid*="composer"]') ??
+        promptNode?.closest('form') ??
+        promptNode?.parentElement ??
+        document.querySelector('form') ??
+        document.body;
+      const parent = composerRoot?.parentElement;
+      const composerScope =
+        parent && sendSelectors.some((selector) => parent.querySelector(selector)) ? parent : composerRoot;
+      const localInputs = composerScope
+        ? Array.from(composerScope.querySelectorAll('input[type="file"][multiple]'))
+        : [];
+      const allInputs = Array.from(document.querySelectorAll('input[type="file"][multiple]'));
+      const inputs = [];
+      const seen = new Set();
+      for (const input of [...localInputs, ...allInputs]) {
+        if (seen.has(input)) continue;
+        seen.add(input);
+        input.removeAttribute('data-oracle-batch-upload-candidate');
+        inputs.push(input);
+      }
+      const isImageOnly = (accept) => {
+        const values = String(accept || '')
+          .split(',')
+          .map((value) => value.trim().toLowerCase())
+          .filter(Boolean);
+        return values.length > 0 && values.every((value) => value.startsWith('image/'));
+      };
+      const localSet = new Set(localInputs);
+      const genericInputs = inputs
+        .filter((input) => input instanceof HTMLInputElement && !isImageOnly(input.getAttribute('accept')))
+        .sort((left, right) => {
+          const leftRect = left.getBoundingClientRect();
+          const rightRect = right.getBoundingClientRect();
+          const leftScore = (localSet.has(left) ? 100 : 0) + (leftRect.width > 0 && leftRect.height > 0 ? 10 : 0);
+          const rightScore = (localSet.has(right) ? 100 : 0) + (rightRect.width > 0 && rightRect.height > 0 ? 10 : 0);
+          return rightScore - leftScore;
+        });
+      const target = genericInputs[0];
+      if (!target) return { found: false };
+      target.setAttribute('data-oracle-batch-upload-candidate', 'true');
+      return { found: true };
+    })()`,
+    returnByValue: true,
+  });
+  const hasBatchCandidate = Boolean(
+    (batchCandidate?.result?.value as { found?: boolean } | undefined)?.found,
+  );
+  if (hasBatchCandidate) {
+    const resultNode = await dom.querySelector({
+      nodeId: documentNode.root.nodeId,
+      selector: 'input[type="file"][multiple][data-oracle-batch-upload-candidate="true"]',
+    });
+    if (resultNode?.nodeId) {
+      const files = attachments.map((attachment) => attachment.path);
+      await dom.setFileInputFiles({ nodeId: resultNode.nodeId, files });
+      const dispatched = await runtime.evaluate({
+        expression: `(() => {
+          const input = document.querySelector('input[type="file"][multiple][data-oracle-batch-upload-candidate="true"]');
+          if (!(input instanceof HTMLInputElement)) return false;
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        })()`,
+        returnByValue: true,
+      });
+      if (dispatched?.result?.value !== true) {
+        throw new Error(
+          "Batch attachment input disappeared before ChatGPT could receive its change event.",
+        );
+      }
+      logger(`Queued ${attachments.length} attachments in one file-input assignment.`);
+      return { batched: true };
+    }
+  }
+
+  logger("No generic multi-file input found; uploading attachments sequentially.");
+  for (let index = 0; index < attachments.length; index += 1) {
+    const attachment = attachments[index];
+    logger(`Uploading attachment: ${attachment.displayPath}`);
+    await uploadAttachmentFile(deps, attachment, logger, {
+      expectedCount: index + 1,
+      // A non-multiple input replaces its FileList. Do not risk assigning the next file until this one is UI-anchored.
+      requireUi: index < attachments.length - 1,
+    });
+    await delay(500);
+  }
+  return { batched: false };
 }
 
 export async function clearComposerAttachments(
@@ -1328,14 +1502,46 @@ export async function waitForAttachmentCompletion(
   timeoutMs: number,
   expectedNames: string[] = [],
   logger?: BrowserLogger,
+  options: { requireExactNames?: boolean } = {},
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
+  const requireExactNames = options.requireExactNames === true;
   const expectedNormalized = expectedNames.map((name) => name.toLowerCase());
   const expectedInputBasenames = expectedNormalized
     .map((name) => name.split("/").pop()?.split("\\").pop() ?? name)
     .map((name) => name.toLowerCase().replace(/\s+/g, " ").trim())
     .filter(Boolean);
   const expectedInputSignature = expectedInputBasenames.slice().sort().join("\0");
+  const hasExpectedInputNames = (inputNames: string[]): boolean => {
+    const remaining = new Map<string, number>();
+    for (const expected of expectedInputBasenames) {
+      remaining.set(expected, (remaining.get(expected) ?? 0) + 1);
+    }
+    for (const rawName of inputNames) {
+      const name = rawName
+        .split("/")
+        .pop()
+        ?.split("\\")
+        .pop()
+        ?.toLowerCase()
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!name) continue;
+      const count = remaining.get(name) ?? 0;
+      if (count > 0) remaining.set(name, count - 1);
+    }
+    return (
+      expectedInputBasenames.length > 0 &&
+      Array.from(remaining.values()).every((count) => count === 0)
+    );
+  };
+  const hasExpectedAttachedNames = (attachedNames: string[]): boolean =>
+    expectedInputBasenames.length > 0 &&
+    expectedInputBasenames.every((expected) => {
+      const escaped = expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const exactName = new RegExp(`(?:^|[^a-z0-9._-])${escaped}(?=$|[^a-z0-9._-])`, "i");
+      return attachedNames.some((name) => exactName.test(name));
+    });
   let inputMatchSince: number | null = null;
   let inputOnlyReadySince: number | null = null;
   let inputOnlySignature = "";
@@ -1599,6 +1805,8 @@ export async function waitForAttachmentCompletion(
       const fileCount = typeof value.fileCount === "number" ? value.fileCount : 0;
       const fileCountSatisfied =
         expectedNormalized.length > 0 && fileCount >= expectedNormalized.length;
+      const exactInputNamesSatisfied = hasExpectedInputNames(inputNames);
+      const exactAttachedNamesSatisfied = hasExpectedAttachedNames(attachedNames);
       const matchesExpected = (expected: string): boolean => {
         const baseName = expected.split("/").pop()?.split("\\").pop() ?? expected;
         const normalizedExpected = baseName.toLowerCase().replace(/\s+/g, " ").trim();
@@ -1620,7 +1828,13 @@ export async function waitForAttachmentCompletion(
         });
       };
       const missing = expectedNormalized.filter((expected) => !matchesExpected(expected));
-      if (missing.length === 0 || fileCountSatisfied) {
+      const namesSatisfied = requireExactNames
+        ? exactInputNamesSatisfied || exactAttachedNamesSatisfied
+        : missing.length === 0 || fileCountSatisfied;
+      const attachmentEvidence = requireExactNames
+        ? Boolean(value.filesAttached) || exactInputNamesSatisfied
+        : Boolean(value.filesAttached) || fileCountSatisfied;
+      if (namesSatisfied) {
         const stableThresholdMs = value.uploading ? 3000 : 1500;
         if (attachmentMatchSince === null) {
           attachmentMatchSince = Date.now();
@@ -1631,11 +1845,11 @@ export async function waitForAttachmentCompletion(
         }
         // Don't treat disabled button as complete - wait for it to become 'ready'.
         // The spinner detection is unreliable, so a disabled button likely means upload is in progress.
-        if (value.state === "missing" && (value.filesAttached || fileCountSatisfied)) {
+        if (value.state === "missing" && attachmentEvidence) {
           return;
         }
         // If files are attached but button isn't ready yet, give it more time but don't fail immediately.
-        if (value.filesAttached || fileCountSatisfied) {
+        if (attachmentEvidence) {
           await delay(500);
           continue;
         }
@@ -1644,8 +1858,9 @@ export async function waitForAttachmentCompletion(
       }
 
       const inputOnlySignatureNow = inputNames.slice().sort().join("\0");
-      const inputOnlyNamesSatisfied =
-        expectedInputBasenames.length > 0 && inputOnlySignatureNow === expectedInputSignature;
+      const inputOnlyNamesSatisfied = requireExactNames
+        ? exactInputNamesSatisfied
+        : expectedInputBasenames.length > 0 && inputOnlySignatureNow === expectedInputSignature;
       const inputOnlyReady =
         inputOnlyNamesSatisfied &&
         value.state === "ready" &&
@@ -1679,8 +1894,12 @@ export async function waitForAttachmentCompletion(
       });
       // Don't include 'disabled' - a disabled button likely means upload is still in progress.
       const inputStateOk = value.state === "ready" || value.state === "missing";
-      const inputSeenNow = inputMissing.length === 0 || fileCountSatisfied;
-      const inputEvidenceOk = Boolean(value.filesAttached) || fileCountSatisfied;
+      const inputSeenNow = requireExactNames
+        ? exactInputNamesSatisfied
+        : inputMissing.length === 0 || fileCountSatisfied;
+      const inputEvidenceOk = requireExactNames
+        ? Boolean(value.filesAttached) || exactAttachedNamesSatisfied
+        : Boolean(value.filesAttached) || fileCountSatisfied;
       const stableThresholdMs = value.uploading ? 3000 : 1500;
       if (inputSeenNow && inputStateOk && inputEvidenceOk) {
         if (inputMatchSince === null) {
@@ -2118,8 +2337,14 @@ async function waitForAttachmentAnchored(
   Runtime: ChromeClient["Runtime"],
   expectedName: string,
   timeoutMs: number,
+  options: { requireUi?: boolean; expectedCount?: number } = {},
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
+  const requireUi = options.requireUi === true;
+  const expectedCount =
+    typeof options.expectedCount === "number" && Number.isFinite(options.expectedCount)
+      ? Math.max(1, Math.floor(options.expectedCount))
+      : 1;
   const expression = `(() => {
     const normalized = ${JSON.stringify(expectedName.toLowerCase())};
     const normalizedNoExt = normalized.replace(/\\.[a-z0-9]{1,10}$/i, '');
@@ -2141,12 +2366,14 @@ async function waitForAttachmentAnchored(
       return false;
     };
 
-    const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
-    for (const input of inputs) {
-      if (!(input instanceof HTMLInputElement)) continue;
-      for (const file of Array.from(input.files || [])) {
-        if (file?.name && matchesExpected(file.name)) {
-          return { found: true, text: 'file-input' };
+    if (!${JSON.stringify(requireUi)}) {
+      const inputs = Array.from(document.querySelectorAll('input[type="file"]'));
+      for (const input of inputs) {
+        if (!(input instanceof HTMLInputElement)) continue;
+        for (const file of Array.from(input.files || [])) {
+          if (file?.name && matchesExpected(file.name)) {
+            return { found: true, text: 'file-input' };
+          }
         }
       }
     }
@@ -2245,7 +2472,7 @@ async function waitForAttachmentAnchored(
         }
       }
     }
-    if (fileCount > 0) {
+    if (fileCount >= ${expectedCount}) {
       return { found: true, text: 'file-count' };
     }
     return { found: false };

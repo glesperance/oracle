@@ -600,12 +600,26 @@ function buildAttachmentReadyExpression(attachmentNames: AttachmentReadyInput[])
         return true;
       });
     })();
+    const attachmentInputs = new Set();
+    for (const root of attachmentRoots) {
+      for (const input of Array.from(root.querySelectorAll('input[type="file"]'))) {
+        attachmentInputs.add(input);
+      }
+    }
+    // ChatGPT can render the file input in a portal outside the composer. Trust
+    // only inputs tagged by Oracle's upload path there, and keep filename matching.
+    for (const selector of [
+      'input[type="file"][data-oracle-upload-idx]',
+      'input[type="file"][data-oracle-batch-upload-candidate="true"]',
+    ]) {
+      for (const input of Array.from(document.querySelectorAll(selector))) {
+        attachmentInputs.add(input);
+      }
+    }
     const inputsReady = expected.every((item) =>
-      attachmentRoots.some((root) =>
-        Array.from(root.querySelectorAll('input[type="file"]')).some((el) =>
-          Array.from((el instanceof HTMLInputElement ? el.files : []) || []).some((file) =>
-            matchesExpected(file?.name, item),
-          ),
+      Array.from(attachmentInputs).some((el) =>
+        Array.from((el instanceof HTMLInputElement ? el.files : []) || []).some((file) =>
+          matchesExpected(file?.name, item),
         ),
       ),
     );

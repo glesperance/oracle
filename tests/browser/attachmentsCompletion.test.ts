@@ -82,9 +82,42 @@ describe("attachment completion fallbacks", () => {
       }),
     } as unknown as ChromeClient["Runtime"];
 
-    const promise = waitForAttachmentCompletion(runtime, 10_000, ["a.txt", "b.txt"]);
+    const promise = waitForAttachmentCompletion(runtime, 10_000, ["a.txt", "b.txt"], undefined, {
+      requireExactNames: true,
+    });
     await vi.advanceTimersByTimeAsync(2_000);
     await expect(promise).resolves.toBeUndefined();
+    useRealTime();
+  });
+
+  test("strict completion rejects one filename that only shares another expected filename's prefix", async () => {
+    useFakeTime();
+
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: {
+          value: {
+            state: "ready",
+            uploading: false,
+            filesAttached: true,
+            attachedNames: ["capture-0001.png.backup"],
+            inputNames: [],
+            fileCount: 2,
+          },
+        },
+      }),
+    } as unknown as ChromeClient["Runtime"];
+
+    const promise = waitForAttachmentCompletion(
+      runtime,
+      800,
+      ["capture-0001.png", "capture-0001.png.backup"],
+      undefined,
+      { requireExactNames: true },
+    );
+    const assertion = expect(promise).rejects.toThrow(/did not finish uploading/i);
+    await vi.advanceTimersByTimeAsync(2_000);
+    await assertion;
     useRealTime();
   });
 
