@@ -222,6 +222,11 @@ function isGeminiDeepThinkAlias(normalized: string): boolean {
 
 export function resolveApiModel(modelValue: string): ModelName {
   const normalized = normalizeModelOption(modelValue).toLowerCase();
+  // Engine routing also calls this for browser runs. Preserve the literal slug
+  // without registering API metadata or applying the generic Pro alias below.
+  if (normalized === "gpt-6-pro") {
+    return normalized;
+  }
   if (normalized in MODEL_CONFIGS) {
     return normalized as ModelName;
   }
@@ -333,6 +338,12 @@ export function inferModelFromLabel(modelValue: string): ModelName {
   }
   if (normalized.includes("/")) {
     return normalized as ModelName;
+  }
+  if (/^(?:(?:chatgpt|gpt)[\s._-]*)?6(?!\d)/.test(normalized)) {
+    if (/^(?:(?:chatgpt|gpt)[\s._-]*)?6[\s._-]+pro$/.test(normalized)) {
+      return "gpt-6-pro";
+    }
+    throw new InvalidArgumentError(`Unknown GPT-6 browser model "${modelValue}". Use gpt-6-pro.`);
   }
   if (normalized.includes("grok")) {
     return "grok-4.1";

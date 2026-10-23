@@ -75,9 +75,17 @@ const evaluateImmediateModelSelectionExpression = (
   );
 };
 
+type MenuModelOption = {
+  label: string;
+  testId?: string;
+  selected?: boolean;
+  resolvedLabel?: string;
+  onSelect?: () => void;
+};
+
 const evaluateMenuModelSelectionExpression = async (
   targetModel: string,
-  option: { label: string; testId?: string } | Array<{ label: string; testId?: string }>,
+  option: MenuModelOption | MenuModelOption[],
   extraMenus: unknown[] = [],
 ): Promise<unknown> => {
   class FakeEventTarget {
@@ -142,9 +150,18 @@ const evaluateMenuModelSelectionExpression = async (
   const options = Array.isArray(option) ? option : [option];
   const modelOptions = options.map(
     (item) =>
-      new FakeElement(item.label, item.testId ? { "data-testid": item.testId } : {}, [], () => {
-        modelButton.textContent = item.label;
-      }),
+      new FakeElement(
+        item.label,
+        {
+          ...(item.testId ? { "data-testid": item.testId } : {}),
+          "aria-checked": item.selected ? "true" : "false",
+        },
+        [],
+        () => {
+          item.onSelect?.();
+          modelButton.textContent = item.resolvedLabel ?? item.label;
+        },
+      ),
   );
   const menu = new FakeElement(
     options.map((item) => item.label).join(" "),
@@ -172,9 +189,11 @@ const evaluateMenuModelSelectionExpression = async (
     body: { innerText: "" },
     dispatchEvent: () => true,
   };
-  const performanceStub = { now: () => 0 };
+  let elapsedMs = 0;
+  const performanceStub = { now: () => elapsedMs };
   const windowStub = { location: { href: "https://chatgpt.com/" } };
-  const immediateSetTimeout = (handler: TimerHandler): number => {
+  const immediateSetTimeout = (handler: TimerHandler, delayMs = 0): number => {
+    elapsedMs += delayMs;
     if (typeof handler === "function") {
       handler();
     }
@@ -939,6 +958,183 @@ const evaluateNoModelButtonExpression = (
 };
 
 describe("browser model selection matchers", () => {
+  it("keeps GPT-6 Pro matcher tokens versioned without generic Pro aliases", () => {
+    const { labelTokens, testIdTokens } = buildModelMatchersLiteralForTest("GPT-6 Pro");
+    expect(labelTokens).toContain("gpt-6 pro");
+    expect([...labelTokens, ...testIdTokens]).not.toContain("pro");
+    expect(labelTokens).not.toContain("proresearch");
+    expect(buildComposerSignalMatchersForTest("GPT-6 Pro")).toEqual({
+      includesAny: ["6 pro"],
+      excludesAny: ["thinking", "instant"],
+      allowBlank: false,
+    });
+  });
+
+  const exactGpt6ProLabels = [
+    "GPT-6 Pro",
+    "ChatGPT 6 Pro",
+    "6 Pro",
+    // Adjacent version and variant spans have no separator in textContent.
+    "6Pro",
+    "GPT-6Pro",
+    "ChatGPT 6Pro",
+  ];
+
+  it.each(exactGpt6ProLabels)("recognizes exact GPT-6 Pro evidence %s", (label) => {
+    expect(evaluateImmediateModelSelectionExpression("GPT-6 Pro", label)).toEqual({
+      status: "already-selected",
+      label,
+    });
+    expect(evaluateImmediateModelSelectionExpression("GPT-6 Pro", "ChatGPT", label)).toEqual({
+      status: "already-selected",
+      label,
+    });
+  });
+
+  const inexactGpt6ProLabels = [
+    "Pro",
+    "Pro Extended",
+    "GPT-5.5 Pro",
+    "GPT-5.6 Sol Pro",
+    "GPT-6",
+    "GPT-6 Thinking",
+    "GPT-6.1 Pro",
+    "GPT-6.0 Pro",
+    "GPT-60 Pro",
+    "GPT-6 Pro Preview",
+    "5.6Pro",
+    "GPT-5.6Pro",
+    "6.1Pro",
+    "GPT-6.1Pro",
+    "6Pro Preview",
+  ];
+
+  it.each(inexactGpt6ProLabels)("rejects inexact active GPT-6 Pro signal %s", (label) => {
+    expect(evaluateImmediateModelSelectionExpression("GPT-6 Pro", label)).toBeInstanceOf(Promise);
+    expect(
+      evaluateImmediateModelSelectionExpression("GPT-6 Pro", "ChatGPT", label, "Pro"),
+    ).toBeInstanceOf(Promise);
+  });
+
+  it("selects only the exact GPT-6 Pro row among generic and older Pro rows", async () => {
+    const wrongSelection = vi.fn();
+    await expect(
+      evaluateMenuModelSelectionExpression("GPT-6 Pro", [
+        ...inexactGpt6ProLabels.map((label) => ({ label, onSelect: wrongSelection })),
+        { label: "GPT-6 Pro" },
+      ]),
+    ).resolves.toEqual({ status: "switched", label: "GPT-6 Pro" });
+    expect(wrongSelection).not.toHaveBeenCalled();
+  });
+
+  it("uses the checked exact GPT-6 Pro row as selection evidence", async () => {
+    const select = vi.fn();
+    await expect(
+      evaluateMenuModelSelectionExpression("gpt-6-pro", {
+        label: "GPT-6 Pro",
+        selected: true,
+        onSelect: select,
+      }),
+    ).resolves.toEqual({ status: "already-selected", label: "GPT-6 Pro" });
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it.each(inexactGpt6ProLabels)(
+    "fails closed without clicking inexact picker row %s",
+    async (label) => {
+      const wrongSelection = vi.fn();
+      await expect(
+        evaluateMenuModelSelectionExpression("GPT-6 Pro", {
+          label,
+          testId: "model-switcher-gpt-6-pro",
+          selected: true,
+          onSelect: wrongSelection,
+        }),
+      ).resolves.toMatchObject({ status: "option-not-found" });
+      expect(wrongSelection).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["6Pro", "GPT-6Pro", "ChatGPT 6Pro"])(
+    "verifies an exact GPT-6 Pro row click that settles on %s textContent",
+    async (label) => {
+      await expect(
+        evaluateMenuModelSelectionExpression("GPT-6 Pro", {
+          label: "GPT-6 Pro",
+          resolvedLabel: label,
+        }),
+      ).resolves.toEqual({ status: "switched", label });
+    },
+  );
+
+  it.each(["Pro", "5.6Pro", "6.1Pro"])(
+    "does not verify an exact row click that settles on %s",
+    async (label) => {
+      await expect(
+        evaluateMenuModelSelectionExpression("GPT-6 Pro", {
+          label: "GPT-6 Pro",
+          resolvedLabel: label,
+        }),
+      ).resolves.toMatchObject({ status: "option-not-found" });
+    },
+  );
+
+  it("verifies already-selected 6Pro textContent with the explicit select strategy", async () => {
+    const runtime = {
+      evaluate: vi.fn().mockResolvedValue({
+        result: { value: evaluateImmediateModelSelectionExpression("GPT-6 Pro", "6Pro") },
+      }),
+    };
+    await expect(
+      ensureModelSelection(
+        runtime as never,
+        "GPT-6 Pro",
+        vi.fn<(message: string) => void>(),
+        "select",
+        {
+          buttonWaitMs: 0,
+        },
+      ),
+    ).resolves.toMatchObject({
+      requestedModel: "GPT-6 Pro",
+      resolvedLabel: "6Pro",
+      strategy: "select",
+      status: "already-selected",
+      verified: true,
+    });
+  });
+
+  it.each(["", ...inexactGpt6ProLabels])(
+    "rejects inexact GPT-6 Pro runtime evidence %s",
+    async (label) => {
+      const runtime = {
+        evaluate: vi.fn().mockResolvedValue({ result: { value: { status: "switched", label } } }),
+      };
+      await expect(
+        ensureModelSelection(runtime as never, "GPT-6 Pro", vi.fn<(message: string) => void>()),
+      ).rejects.toThrow(/requires GPT-6 Pro/);
+    },
+  );
+
+  it.each(exactGpt6ProLabels)(
+    "records verified exact GPT-6 Pro selection evidence %s",
+    async (label) => {
+      const runtime = {
+        evaluate: vi.fn().mockResolvedValue({
+          result: { value: { status: "switched", label } },
+        }),
+      };
+      await expect(
+        ensureModelSelection(runtime as never, "GPT-6 Pro", vi.fn<(message: string) => void>()),
+      ).resolves.toMatchObject({
+        requestedModel: "GPT-6 Pro",
+        resolvedLabel: label,
+        strategy: "select",
+        verified: true,
+      });
+    },
+  );
+
   it("includes explicit GPT-5.6 Sol tokens", () => {
     const { labelTokens, testIdTokens } = buildModelMatchersLiteralForTest("GPT-5.6 Sol");
     expect(labelTokens).toContain("gpt-5.6 sol");

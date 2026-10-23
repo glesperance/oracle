@@ -5,6 +5,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { finished } from "node:stream/promises";
 import { setOracleHomeDirOverrideForTest } from "../src/oracleHome.js";
 import { sessionStore as store } from "../src/sessionStore.js";
+import { resolveRunOptionsFromConfig } from "../src/cli/runOptions.js";
+import { buildBrowserConfig } from "../src/cli/browserConfig.js";
 
 describe("sessionStore", () => {
   let tmpHome: string;
@@ -58,6 +60,27 @@ describe("sessionStore", () => {
     expect(fetched?.options.browserFollowUps).toEqual(["second turn"]);
     expect(fetched?.options.aspectRatio).toBe("1:1");
     expect(fetched?.options.geminiShowThoughts).toBe(true);
+  });
+
+  test("persists exact GPT-6 Pro browser identity for restarts", async () => {
+    const { runOptions } = resolveRunOptionsFromConfig({
+      prompt: "Persist the exact requested browser model",
+      model: "gpt-6-pro",
+      engine: "browser",
+    });
+    const browserConfig = await buildBrowserConfig({ model: runOptions.model });
+    const meta = await store.createSession(
+      { ...runOptions, mode: "browser", browserConfig },
+      process.cwd(),
+    );
+    const fetched = await store.readSession(meta.id);
+    expect(fetched).toMatchObject({
+      model: "gpt-6-pro",
+      options: { model: "gpt-6-pro", effectiveModelId: "gpt-6-pro" },
+      browser: { config: { desiredModel: "GPT-6 Pro", modelStrategy: "select" } },
+    });
+    const request = await store.readRequest(meta.id);
+    expect(request).toMatchObject({ model: "gpt-6-pro", effectiveModelId: "gpt-6-pro" });
   });
 
   test("writes per-model logs and aggregates combined log", async () => {

@@ -216,6 +216,10 @@ describe("normalizeModelOption", () => {
 });
 
 describe("resolveApiModel", () => {
+  test("preserves the exact GPT-6 Pro slug during engine routing", () => {
+    expect(resolveApiModel("gpt-6-pro")).toBe("gpt-6-pro");
+  });
+
   test("accepts canonical names regardless of case", () => {
     expect(resolveApiModel("gpt-5.5-pro")).toBe("gpt-5.5-pro");
     expect(resolveApiModel("GPT-5.5")).toBe("gpt-5.5");
@@ -279,6 +283,25 @@ describe("resolveApiModel", () => {
 });
 
 describe("inferModelFromLabel", () => {
+  test.each(["gpt-6-pro", " GPT-6 Pro ", "ChatGPT 6 Pro", "6 Pro"])(
+    "preserves the exact GPT-6 Pro identity for %s",
+    (label) => {
+      expect(inferModelFromLabel(label)).toBe("gpt-6-pro");
+    },
+  );
+
+  test.each([
+    "gpt-6",
+    "gpt-6-thinking",
+    "gpt-6-pro-extended",
+    "GPT-6 Pro (Classic)",
+    "gpt-6-codex-pro",
+    "gpt-6.1-pro",
+    "gpt-6.0-pro",
+  ])("rejects unsupported GPT-6 browser label %s before generic aliases", (label) => {
+    expect(() => inferModelFromLabel(label)).toThrow(/Use gpt-6-pro/);
+  });
+
   test("returns canonical names when label already matches", () => {
     expect(inferModelFromLabel("gpt-5.6")).toBe("gpt-5.6");
     expect(inferModelFromLabel("gpt-5.5-pro")).toBe("gpt-5.5-pro");

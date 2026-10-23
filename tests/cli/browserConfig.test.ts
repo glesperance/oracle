@@ -1,7 +1,29 @@
 import { describe, expect, test } from "vitest";
-import { buildBrowserConfig, resolveBrowserModelLabel } from "../../src/cli/browserConfig.js";
+import {
+  buildBrowserConfig,
+  normalizeChatGptModelForBrowser,
+  resolveBrowserModelLabel,
+} from "../../src/cli/browserConfig.js";
 
 describe("buildBrowserConfig", () => {
+  test("keeps GPT-6 Pro versioned through the existing browser-label path", async () => {
+    const model = normalizeChatGptModelForBrowser("gpt-6-pro");
+    expect(model).toBe("gpt-6-pro");
+    expect(normalizeChatGptModelForBrowser("GPT-6-PRO")).toBe(model);
+    const browserModelLabel = resolveBrowserModelLabel(model, model);
+    expect(browserModelLabel).toBe("GPT-6 Pro");
+    const config = await buildBrowserConfig({ model, browserModelLabel });
+    expect(config).toMatchObject({ desiredModel: "GPT-6 Pro", modelStrategy: "select" });
+  });
+
+  test.each(["Pro", "GPT-5.5 Pro", "GPT-6 Thinking"])(
+    "does not replace GPT-6 Pro with browser label override %s",
+    async (browserModelLabel) => {
+      const config = await buildBrowserConfig({ model: "gpt-6-pro", browserModelLabel });
+      expect(config.desiredModel).toBe("GPT-6 Pro");
+    },
+  );
+
   test("uses defaults when optional flags omitted", async () => {
     const config = await buildBrowserConfig({ model: "gpt-5.5-pro" });
     expect(config).toMatchObject({

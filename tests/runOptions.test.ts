@@ -368,6 +368,17 @@ describe("resolveRunOptionsFromConfig", () => {
     expect(runOptions.model).toBe("gpt-5.2");
   });
 
+  it.each(["gpt-6-pro", "GPT-6 Pro"])("keeps %s in browser session options", (model) => {
+    const { resolvedEngine, runOptions } = resolveRunOptionsFromConfig({
+      prompt: basePrompt,
+      model,
+      engine: "browser",
+    });
+    expect(resolvedEngine).toBe("browser");
+    expect(runOptions).toMatchObject({ model: "gpt-6-pro", effectiveModelId: "gpt-6-pro" });
+    expect(MODEL_CONFIGS).not.toHaveProperty("gpt-6-pro");
+  });
+
   it("keeps GPT-5.6 aliases in explicit browser runs", () => {
     const family = resolveRunOptionsFromConfig({
       prompt: basePrompt,

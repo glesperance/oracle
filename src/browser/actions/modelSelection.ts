@@ -12,6 +12,9 @@ import { delay } from "../utils.js";
 
 const LEGACY_PRO_VERSION_WORD_TOKENS = ["5 4", "5 2", "5 1", "5 0", "gpt 5 pro"] as const;
 const LEGACY_PRO_VERSION_COMPACT_TOKENS = ["gpt54", "gpt52", "gpt51", "gpt50"] as const;
+// GPT-6 Pro is an exact browser target; generic Pro/effort aliases are not evidence.
+// Adjacent version/variant spans can expose "6Pro" through textContent.
+const GPT_6_PRO_LABEL_PATTERN = /^(?:(?:chatgpt|gpt) )?6 ?pro$/;
 
 type ModelSelectionResult =
   | { status: "already-selected"; label?: string | null }
@@ -109,6 +112,14 @@ function assertResolvedModelSelection(desiredModel: string, resolvedLabel: strin
   const resolved = resolvedLabel.toLowerCase();
   const normalizedDesired = normalizeResolvedModelLabel(desired);
   const normalizedResolved = normalizeResolvedModelLabel(resolved);
+  if (GPT_6_PRO_LABEL_PATTERN.test(normalizedDesired)) {
+    if (!GPT_6_PRO_LABEL_PATTERN.test(normalizedResolved)) {
+      throw new Error(
+        `Model picker selected "${resolvedLabel}" while "${desiredModel}" requires GPT-6 Pro.`,
+      );
+    }
+    return;
+  }
   const wantsGpt56Sol =
     /(?:^| )5 6(?: |$)/.test(normalizedDesired) && normalizedDesired.split(" ").includes("sol");
   if (wantsGpt56Sol) {
@@ -224,6 +235,8 @@ function buildModelSelectionExpression(
     const hasToken = (value, token) => normalizeText(value).split(' ').includes(token);
     // Normalize every candidate token to keep fuzzy matching deterministic.
     const normalizedTarget = normalizeText(PRIMARY_LABEL);
+    const isExactGpt6ProLabel = (value) => ${GPT_6_PRO_LABEL_PATTERN}.test(normalizeText(value));
+    const requiresExactGpt6Pro = isExactGpt6ProLabel(PRIMARY_LABEL);
     const normalizedTokens = Array.from(new Set([normalizedTarget, ...LABEL_TOKENS]))
       .map((token) => normalizeText(token))
       .filter(Boolean);
@@ -448,7 +461,25 @@ function buildModelSelectionExpression(
       }
       return true;
     };
+    // The split picker identifies the model in its radio list and effort in
+    // the visible summary. Neither signal alone proves GPT-6 Pro.
+    const splitGpt6ProSummary = () => {
+      for (const menu of document.querySelectorAll('[role="menu"]')) {
+        const summary = menu.querySelector('[data-model-picker-view-toggle="true"][aria-label="Select model"]');
+        if (!summary || summary.closest('[inert], [aria-hidden="true"]')) continue;
+        if (normalizeText(summary.textContent ?? '') !== 'pro') continue;
+        const selected = Array.from(menu.querySelectorAll('[role="menuitemradio"][aria-checked="true"]'));
+        if (selected.length === 1 && normalizeText(selected[0].textContent ?? '') === 'gpt 6') {
+          return summary;
+        }
+      }
+      return null;
+    };
     const getResolvedLabel = (fallback) => {
+      if (requiresExactGpt6Pro) {
+        if (splitGpt6ProSummary()) return 'GPT-6 Pro';
+        return [getComposerModelLabel(), getButtonLabel(), fallback].find(isExactGpt6ProLabel) || '';
+      }
       if (configuredSelectionMatchesTarget()) {
         const variant = getConfiguredVariantLabel();
         const version = formatModelOptionLabel(getConfiguredVersionLabel());
@@ -503,6 +534,7 @@ function buildModelSelectionExpression(
       return { status: 'button-missing' };
     }
     const buttonMatchesTarget = () => {
+      if (requiresExactGpt6Pro) return isExactGpt6ProLabel(getButtonLabel());
       if (configuredSelectionMatchesTarget()) return true;
       const normalizedLabel = normalizeText(getButtonLabel());
       if (!normalizedLabel) return false;
@@ -564,6 +596,7 @@ function buildModelSelectionExpression(
     };
     const composerSignalMatchesTarget = () => {
       const signal = readComposerModelSignal();
+      if (requiresExactGpt6Pro) return isExactGpt6ProLabel(signal);
       if (!signal) {
         return COMPOSER_SIGNAL_ALLOW_BLANK;
       }
@@ -650,6 +683,10 @@ function buildModelSelectionExpression(
     };
 
     const scoreOption = (normalizedText, testid, node) => {
+      // Do not let a generic Pro row, effort pill, or test ID satisfy this versioned target.
+      if (requiresExactGpt6Pro) {
+        return isExactGpt6ProLabel(normalizedText) || node === splitGpt6ProSummary() ? 3000 : 0;
+      }
       // Assign a score to every node so we can pick the most likely match without brittle equality checks.
       if (!normalizedText && !testid) {
         return 0;
@@ -988,7 +1025,18 @@ function buildModelSelectionExpression(
       node?.getAttribute?.('aria-haspopup') === 'menu' ||
       node?.getAttribute?.('data-has-submenu') !== null;
     const canTrustSelectedOption = (node, normalizedText, testid) => {
+      // The current picker exposes its selected model/effort in a view-toggle row,
+      // not an aria-checked radio option. Require that specific control and exact label.
+      if (
+        requiresExactGpt6Pro &&
+        node?.getAttribute?.('data-model-picker-view-toggle') === 'true' &&
+        node?.getAttribute?.('aria-label') === 'Select model' &&
+        (isExactGpt6ProLabel(normalizedText) || node === splitGpt6ProSummary())
+      ) return true;
       if (!optionIsSelected(node)) return false;
+      if (requiresExactGpt6Pro) {
+        return !isSubmenuOption(node, testid) && isExactGpt6ProLabel(normalizedText);
+      }
       if (getConfigurationDialog() && !configuredSelectionMatchesTarget()) return false;
       const optionVersion = versionFromLabel(normalizedText) ?? versionFromTestId(testid);
       if (desiredVersion && optionVersion !== desiredVersion) return false;
@@ -1217,6 +1265,9 @@ function buildComposerSignalMatchers(targetModel: string): ComposerSignalMatcher
     .replace(/\s+/g, " ")
     .trim();
 
+  if (GPT_6_PRO_LABEL_PATTERN.test(normalized)) {
+    return { includesAny: ["6 pro"], excludesAny: ["thinking", "instant"], allowBlank: false };
+  }
   if (normalized.includes("5 6")) {
     return { includesAny: ["5 6 sol"], excludesAny: ["pro"], allowBlank: false };
   }
@@ -1241,6 +1292,12 @@ function buildModelMatchersLiteral(targetModel: string): {
   testIdTokens: string[];
 } {
   const base = targetModel.trim().toLowerCase();
+  if (GPT_6_PRO_LABEL_PATTERN.test(normalizeResolvedModelLabel(base))) {
+    return {
+      labelTokens: ["gpt-6 pro", "chatgpt 6 pro", "6 pro"],
+      testIdTokens: ["gpt-6-pro", "model-switcher-gpt-6-pro"],
+    };
+  }
   const labelTokens = new Set<string>();
   const testIdTokens = new Set<string>();
 
