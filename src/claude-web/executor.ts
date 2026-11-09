@@ -36,7 +36,8 @@ const SEL = {
   modelPicker: '[data-testid="model-selector-dropdown"]',
   attachMenu: '[data-testid="chat-input-attach"]',
   researchItem: '[data-testid="add-menu-research"]',
-  researchPill: 'button[aria-label="Research mode"]',
+  researchPill:
+    'button[aria-label="Research mode"]:not([aria-pressed="false"]), [role="button"][aria-label="Research mode"]:not([aria-pressed="false"]), button[aria-label="Research"][aria-pressed="true"]',
   send: '[data-testid="chat-input-send"]',
 } as const;
 
@@ -108,7 +109,13 @@ export function createClaudeWebExecutor(
         await Input.dispatchMouseEvent({ type: "mouseMoved", x: pt[0], y: pt[1] });
         await delay(250);
         for (const type of ["mousePressed", "mouseReleased"] as const) {
-          await Input.dispatchMouseEvent({ type, x: pt[0], y: pt[1], button: "left", clickCount: 1 });
+          await Input.dispatchMouseEvent({
+            type,
+            x: pt[0],
+            y: pt[1],
+            button: "left",
+            clickCount: 1,
+          });
         }
         await delay(800);
       };
@@ -122,7 +129,11 @@ export function createClaudeWebExecutor(
         `[...document.querySelectorAll('[role^=menuitem]')].find(e=>e.innerText.trim().replace(/\\s+/g,' ').toLowerCase().startsWith(${JSON.stringify(text.toLowerCase())}))`;
 
       await waitForComposer(evaluate, resolved.inputTimeoutMs ?? 120_000, log);
-      const modelSelection = await selectModel(target, { evaluate, click, escape, q, menuRow }, log);
+      const modelSelection = await selectModel(
+        target,
+        { evaluate, click, escape, q, menuRow },
+        log,
+      );
       await enableResearch({ evaluate, click, escape, q }, log);
 
       const composer = `(${q(SEL.composer)}||${q(SEL.composerFallback)})`;
@@ -134,12 +145,11 @@ export function createClaudeWebExecutor(
         throw new Error(`Prompt did not land in the claude.ai composer (${typed} chars).`);
       }
       // Final gate right before send: model and Research must still be on.
-      const gate = await evaluate<{ picker: string | null; research: boolean }>(
-        `({picker:${q(SEL.modelPicker)}?.getAttribute('aria-label')??null,research:!!${q(SEL.researchPill)}})`,
-      );
-      if (!pickerLabelMatches(gate.picker, target) || !gate.research) {
+      const research = await isResearchOn({ evaluate, click, escape, q });
+      const picker = await readPicker({ evaluate, click, escape, q });
+      if (!pickerLabelMatches(picker, target) || !research) {
         throw new Error(
-          `claude.ai settings drifted before send (picker=${gate.picker}, research=${gate.research}).`,
+          `claude.ai settings drifted before send (picker=${picker}, research=${research}).`,
         );
       }
       await click(q(SEL.send), "send button");
@@ -150,7 +160,9 @@ export function createClaudeWebExecutor(
         conversationUrl = await evaluate<string>("location.href");
       }
       if (!conversationUrl.includes("/chat/")) {
-        throw new Error("claude.ai did not open a conversation after send; prompt may not be submitted.");
+        throw new Error(
+          "claude.ai did not open a conversation after send; prompt may not be submitted.",
+        );
       }
       const conversationId = conversationUrl.split("/chat/")[1]?.split(/[?#/]/)[0] ?? "";
       log(`[claude-web] Submitted. Conversation: ${conversationUrl}`);
@@ -236,7 +248,9 @@ async function waitForComposer(evaluate: Evaluate, timeoutMs: number, log: Brows
     }
     await delay(1_000);
   }
-  throw new Error("Timed out waiting for the claude.ai composer (Cloudflare challenge or UI change).");
+  throw new Error(
+    "Timed out waiting for the claude.ai composer (Cloudflare challenge or UI change).",
+  );
 }
 
 interface Ui {
@@ -292,21 +306,53 @@ function evidence(
   };
 }
 
+async function readResearchChecked(ui: Ui): Promise<string | null> {
+  return ui.evaluate<string | null>(
+    `${ui.q(SEL.researchItem)}?.getAttribute('aria-checked')??null`,
+  );
+}
+
+async function isResearchOn(ui: Ui): Promise<boolean> {
+  // An open menu is authoritative, including an explicit unchecked state.
+  const checked = await readResearchChecked(ui);
+  if (checked !== null) {
+    await ui.escape();
+    return checked === "true";
+  }
+  if (await ui.evaluate<boolean>(`!!${ui.q(SEL.researchPill)}`)) return true;
+  // The composer indicator can be absent while Research is enabled. Reopen the
+  // menu to read state rather than clicking the toggle again and turning it off.
+  await ui.click(ui.q(SEL.attachMenu), "+ menu");
+  try {
+    return (await readResearchChecked(ui)) === "true";
+  } finally {
+    await ui.escape();
+  }
+}
+
 async function enableResearch(ui: Ui, log: BrowserLogger) {
-  const on = () => ui.evaluate<boolean>(`!!${ui.q(SEL.researchPill)}`);
-  if (await on()) {
+  if (await isResearchOn(ui)) {
+    await ui.escape();
     log("[claude-web] Research already on.");
     return;
   }
   await ui.click(ui.q(SEL.attachMenu), "+ menu");
-  const checked = await ui.evaluate<string | null>(
-    `${ui.q(SEL.researchItem)}?.getAttribute('aria-checked')??null`,
-  );
-  if (checked === null) throw new Error("claude.ai + menu has no Research item.");
-  if (checked !== "true") await ui.click(ui.q(SEL.researchItem), "Research item");
-  await ui.escape();
-  if (!(await on())) throw new Error("Research mode did not turn on in claude.ai.");
-  log("[claude-web] Research on.");
+  try {
+    const checked = await readResearchChecked(ui);
+    if (checked === null) throw new Error("claude.ai + menu has no Research item.");
+    if (checked !== "true") await ui.click(ui.q(SEL.researchItem), "Research item");
+  } finally {
+    await ui.escape();
+  }
+  const deadline = Date.now() + 5_000;
+  do {
+    if (await isResearchOn(ui)) {
+      log("[claude-web] Research on.");
+      return;
+    }
+    await delay(250);
+  } while (Date.now() < deadline);
+  throw new Error("Research mode did not turn on in claude.ai.");
 }
 
 async function fetchConversation(

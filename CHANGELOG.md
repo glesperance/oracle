@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- Browser: verify claude.ai Research mode through the checked menu item when its composer indicator is absent, respect explicit pressed state, and wait for activation before the final pre-send check.
 - Browser: recognize keyed ChatGPT user/assistant turns, extract final-answer content, and correlate sibling completion controls to the exact assistant turn so completed runs and reattachments finish instead of waiting indefinitely.
 - Browser: preserve `--model gpt-6-pro` and verify either an exact combined picker label or the split picker's selected GPT-6 model plus Pro effort; fail on generic Pro alone or an older version.
 - Browser: allow pre-send attachment readiness to verify exact expected files in Oracle-tagged inputs rendered outside the composer.
