@@ -324,10 +324,21 @@ async function isResearchOn(ui: Ui): Promise<boolean> {
   // menu to read state rather than clicking the toggle again and turning it off.
   await ui.click(ui.q(SEL.attachMenu), "+ menu");
   try {
-    return (await readResearchChecked(ui)) === "true";
+    return (await waitForResearchItem(ui)) === "true";
   } finally {
     await ui.escape();
   }
+}
+
+/** The + menu renders asynchronously; wait for the Research row before reading it. */
+async function waitForResearchItem(ui: Ui, timeoutMs = 5_000): Promise<string | null> {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const checked = await readResearchChecked(ui);
+    if (checked !== null) return checked;
+    await delay(250);
+  } while (Date.now() < deadline);
+  return null;
 }
 
 async function enableResearch(ui: Ui, log: BrowserLogger) {
@@ -338,14 +349,15 @@ async function enableResearch(ui: Ui, log: BrowserLogger) {
   }
   await ui.click(ui.q(SEL.attachMenu), "+ menu");
   try {
-    const checked = await readResearchChecked(ui);
+    const checked = await waitForResearchItem(ui);
     if (checked === null) throw new Error("claude.ai + menu has no Research item.");
     if (checked !== "true") await ui.click(ui.q(SEL.researchItem), "Research item");
   } finally {
     await ui.escape();
   }
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + 10_000;
   do {
+    await delay(750);
     if (await isResearchOn(ui)) {
       log("[claude-web] Research on.");
       return;
