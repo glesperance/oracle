@@ -39,7 +39,10 @@ const SEL = {
   researchPill:
     'button[aria-label="Research mode"]:not([aria-pressed="false"]), [role="button"][aria-label="Research mode"]:not([aria-pressed="false"]), button[aria-label="Research"][aria-pressed="true"]',
   send: '[data-testid="chat-input-send"]',
+  fileInput: 'input[type="file"][data-testid="file-upload"]',
+  fileThumbnail: '[data-testid="file-thumbnail"]',
 } as const;
+const UPLOAD_TIMEOUT_MS = 120_000;
 
 export interface ClaudeWebExecutorOptions {
   /** Picker label like "Opus 5.5 High"; defaults to Opus 5.5 High. */
@@ -53,11 +56,7 @@ export function createClaudeWebExecutor(
     const started = Date.now();
     const log: BrowserLogger = runOptions.log ?? ((() => {}) as BrowserLogger);
     const target = parseClaudeModelTarget(options.modelLabel);
-    if ((runOptions.attachments ?? []).length > 0) {
-      throw new Error(
-        "claude-research does not upload files yet. Re-run with --browser-attachments never so files are pasted inline.",
-      );
-    }
+    const attachments = runOptions.attachments ?? [];
     const config = runOptions.config ?? {};
     const sourceProfileRoot =
       config.copyProfileSource ??
@@ -88,7 +87,7 @@ export function createClaudeWebExecutor(
       const conn = await connectWithNewTab(chrome.port, log, CLAUDE_NEW_CHAT_URL);
       client = conn.client;
       targetId = conn.targetId ?? undefined;
-      const { Runtime, Input } = client;
+      const { Runtime, Input, DOM } = client;
       await Runtime.enable();
       const evaluate = async <T>(expression: string, awaitPromise = false): Promise<T> => {
         const { result, exceptionDetails } = await Runtime.evaluate({
@@ -135,6 +134,10 @@ export function createClaudeWebExecutor(
         log,
       );
       await enableResearch({ evaluate, click, escape, q }, log);
+      const expectedNames = attachments.map((a) => path.basename(a.path));
+      if (attachments.length > 0) {
+        await uploadAttachments(DOM, evaluate, attachments.map((a) => a.path), log);
+      }
 
       const composer = `(${q(SEL.composer)}||${q(SEL.composerFallback)})`;
       await click(composer, "composer");
@@ -147,6 +150,12 @@ export function createClaudeWebExecutor(
       // Final gate right before send: model and Research must still be on.
       const research = await isResearchOn({ evaluate, click, escape, q });
       const picker = await readPicker({ evaluate, click, escape, q });
+      if (expectedNames.length > 0) {
+        const missing = await missingThumbnails(evaluate, expectedNames);
+        if (missing.length > 0) {
+          throw new Error(`claude.ai attachments vanished before send: ${missing.join(", ")}.`);
+        }
+      }
       if (!pickerLabelMatches(picker, target) || !research) {
         throw new Error(
           `claude.ai settings drifted before send (picker=${picker}, research=${research}).`,
@@ -365,6 +374,49 @@ async function enableResearch(ui: Ui, log: BrowserLogger) {
     await delay(250);
   } while (Date.now() < deadline);
   throw new Error("Research mode did not turn on in claude.ai.");
+}
+
+/** Attach every file in one batch through claude.ai's hidden multi-file input. */
+async function uploadAttachments(
+  dom: ChromeClient["DOM"],
+  evaluate: Evaluate,
+  files: string[],
+  log: BrowserLogger,
+) {
+  await dom.enable();
+  const { root } = await dom.getDocument({ depth: -1, pierce: true });
+  const { nodeId } = await dom.querySelector({ nodeId: root.nodeId, selector: SEL.fileInput });
+  if (!nodeId) throw new Error("claude.ai file upload input not found.");
+  log(`[claude-web] Uploading ${files.length} file(s): ${files.map((f) => path.basename(f)).join(", ")}`);
+  await dom.setFileInputFiles({ nodeId, files });
+  const names = files.map((f) => path.basename(f));
+  const deadline = Date.now() + UPLOAD_TIMEOUT_MS;
+  let missing = names;
+  while (Date.now() < deadline) {
+    await delay(1_000);
+    missing = await missingThumbnails(evaluate, names);
+    const busy = await evaluate<boolean>(
+      `[...document.querySelectorAll(${JSON.stringify(SEL.fileThumbnail)})].some(t=>t.querySelector('[role=progressbar],[aria-busy=true],.animate-spin'))`,
+    );
+    const error = await evaluate<string | null>(
+      `(()=>{const e=[...document.querySelectorAll('[role=alert],[data-sonner-toast]')].map(x=>x.innerText.trim()).find(t=>/upload|file|attach/i.test(t));return e??null})()`,
+    );
+    if (error) throw new Error(`claude.ai rejected an attachment: ${error}`);
+    if (missing.length === 0 && !busy) {
+      log(`[claude-web] Attachments ready (${names.length}).`);
+      return;
+    }
+  }
+  throw new Error(
+    `claude.ai attachments did not finish uploading within ${UPLOAD_TIMEOUT_MS / 1000}s: ${missing.join(", ") || "still processing"}.`,
+  );
+}
+
+async function missingThumbnails(evaluate: Evaluate, names: string[]): Promise<string[]> {
+  const texts = await evaluate<string[]>(
+    `[...document.querySelectorAll(${JSON.stringify(SEL.fileThumbnail)})].map(t=>t.innerText)`,
+  );
+  return names.filter((n) => !texts.some((t) => t.includes(n)));
 }
 
 async function fetchConversation(
